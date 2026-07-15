@@ -1,0 +1,5 @@
+interface:
+  display_name: "UU Revise"
+  short_description: "Adjudicate review feedback and revise the current changeset"
+policy:
+  allow_implicit_invocation: false

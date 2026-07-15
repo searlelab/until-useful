@@ -1,0 +1,5 @@
+interface:
+  display_name: "UU Plan"
+  short_description: "Create a repository-grounded implementation plan from a proposal"
+policy:
+  allow_implicit_invocation: false

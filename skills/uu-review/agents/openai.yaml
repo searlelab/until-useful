@@ -1,0 +1,5 @@
+interface:
+  display_name: "UU Review"
+  short_description: "Review a coding agent's changes against the canonical plan"
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,120 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+SKILLS_DIR="$SCRIPT_DIR/skills"
+FORCE=0
+INSTALL_CLAUDE=0
+INSTALL_CODEX=0
+INSTALL_QWEN=0
+REMOVE_LEGACY=0
+
+usage() {
+  cat <<'USAGE'
+Usage: ./install.sh [--all] [--claude] [--codex] [--qwen] [--force] [--remove-legacy]
+
+With no agent option, installs for all three agents.
+
+Targets:
+  Claude Code  ~/.claude/skills
+  Codex        ~/.agents/skills
+  Qwen Code    ~/.qwen/skills
+
+Options:
+  --all      Install for Claude Code, Codex, and Qwen Code
+  --claude   Install for Claude Code
+  --codex    Install for Codex
+  --qwen     Install for Qwen Code
+  --force    Replace existing folders with the same skill names
+  --remove-legacy
+             Remove the earlier project-plan, project-review, project-revise,
+             project-summarize, and project-propose skill folders
+  --help     Show this message
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --all)
+      INSTALL_CLAUDE=1
+      INSTALL_CODEX=1
+      INSTALL_QWEN=1
+      ;;
+    --claude)
+      INSTALL_CLAUDE=1
+      ;;
+    --codex)
+      INSTALL_CODEX=1
+      ;;
+    --qwen)
+      INSTALL_QWEN=1
+      ;;
+    --force)
+      FORCE=1
+      ;;
+    --remove-legacy)
+      REMOVE_LEGACY=1
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+if [ "$INSTALL_CLAUDE" -eq 0 ] && [ "$INSTALL_CODEX" -eq 0 ] && [ "$INSTALL_QWEN" -eq 0 ]; then
+  INSTALL_CLAUDE=1
+  INSTALL_CODEX=1
+  INSTALL_QWEN=1
+fi
+
+install_to() {
+  agent_name=$1
+  destination=$2
+  mkdir -p "$destination"
+
+  for skill_dir in "$SKILLS_DIR"/uu-*; do
+    skill_name=$(basename "$skill_dir")
+    target="$destination/$skill_name"
+
+    if [ -e "$target" ] || [ -L "$target" ]; then
+      if [ "$FORCE" -eq 1 ]; then
+        rm -rf "$target"
+      else
+        echo "$agent_name: skipped $skill_name, already exists"
+        continue
+      fi
+    fi
+
+    cp -R "$skill_dir" "$target"
+    echo "$agent_name: installed $skill_name"
+  done
+
+  if [ "$REMOVE_LEGACY" -eq 1 ]; then
+    for legacy_name in project-plan project-propose project-review project-revise project-summarize; do
+      legacy_target="$destination/$legacy_name"
+      if [ -e "$legacy_target" ] || [ -L "$legacy_target" ]; then
+        rm -rf "$legacy_target"
+        echo "$agent_name: removed legacy $legacy_name"
+      fi
+    done
+  fi
+}
+
+if [ "$INSTALL_CLAUDE" -eq 1 ]; then
+  install_to "Claude Code" "$HOME/.claude/skills"
+fi
+if [ "$INSTALL_CODEX" -eq 1 ]; then
+  install_to "Codex" "$HOME/.agents/skills"
+fi
+if [ "$INSTALL_QWEN" -eq 1 ]; then
+  install_to "Qwen Code" "$HOME/.qwen/skills"
+fi
+
+echo "Installation complete. Restart an agent session if the new skills do not appear."

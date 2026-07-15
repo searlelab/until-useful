@@ -1,0 +1,5 @@
+interface:
+  display_name: "UU Summarize"
+  short_description: "Write one concise commit title for the current changeset"
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,5 @@
+interface:
+  display_name: "UU Propose"
+  short_description: "Explore a codebase direction and recommend one problem to plan"
+policy:
+  allow_implicit_invocation: false
