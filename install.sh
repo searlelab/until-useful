@@ -7,10 +7,11 @@ INSTALL_CLAUDE=0
 INSTALL_CODEX=0
 INSTALL_QWEN=0
 REMOVE_LEGACY=0
+SKIP_EXISTING=0
 
 usage() {
   cat <<'USAGE'
-Usage: ./install.sh [--all] [--claude] [--codex] [--qwen] [--force] [--remove-legacy]
+Usage: ./install.sh [--all] [--claude] [--codex] [--qwen] [--skip-existing] [--remove-legacy]
 
 With no agent option, installs for all three agents.
 
@@ -24,7 +25,8 @@ Options:
   --claude   Install for Claude Code
   --codex    Install for Codex
   --qwen     Install for Qwen Code
-  --force    Accepted for compatibility; existing uu-* folders are replaced by default
+  --skip-existing
+             Preserve existing uu-* skill folders instead of replacing them
   --remove-legacy
              Remove the earlier project-plan, project-review, project-revise,
              project-summarize, and project-propose skill folders
@@ -48,8 +50,8 @@ while [ "$#" -gt 0 ]; do
     --qwen)
       INSTALL_QWEN=1
       ;;
-    --force)
-      :
+    --skip-existing)
+      SKIP_EXISTING=1
       ;;
     --remove-legacy)
       REMOVE_LEGACY=1
@@ -83,6 +85,10 @@ install_to() {
     target="$destination/$skill_name"
 
     if [ -e "$target" ] || [ -L "$target" ]; then
+      if [ "$SKIP_EXISTING" -eq 1 ]; then
+        echo "$agent_name: skipped $skill_name, already exists"
+        continue
+      fi
       rm -rf "$target"
     fi
 

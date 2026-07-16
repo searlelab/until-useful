@@ -47,10 +47,10 @@ Install only selected agents:
 ./install.sh --qwen
 ```
 
-Existing same-named `uu-*` skill folders are refreshed on every installation; unrelated skills are not changed. `--force` remains accepted for compatibility but is no longer needed. Existing scripts may continue to use it:
+Existing same-named `uu-*` skill folders are refreshed on every installation; unrelated skills are not changed. Preserve existing `uu-*` skills explicitly:
 
 ```sh
-./install.sh --all --force
+./install.sh --all --skip-existing
 ```
 
 Complete the rename by removing skill folders from the earlier release:
