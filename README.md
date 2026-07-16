@@ -64,7 +64,7 @@ This removes only the five earlier `project-*` folders from the selected agent s
 Personal installation locations:
 
 - Claude Code: `~/.claude/skills/`
-- Codex: `~/.agents/skills/`
+- Codex: `~/.agents/skills/` and/or `~/.codex/skills/`
 - Qwen Code: `~/.qwen/skills/`
 
 The `uu-` prefix keeps the suite fast to invoke and avoids collisions with built-in skills. The skills use portable `name` and `description` frontmatter. Codex also reads each optional `agents/openai.yaml`, which disables implicit invocation there. The shared instructions tell every agent to use these workflows only after manual invocation.
