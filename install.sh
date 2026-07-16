@@ -107,14 +107,26 @@ install_to() {
   fi
 }
 
+install_if_available() {
+  agent_name=$1
+  agent_dir=$2
+
+  if [ ! -d "$agent_dir" ]; then
+    echo "$agent_name: skipped because $agent_dir does not exist"
+    return
+  fi
+
+  install_to "$agent_name" "$agent_dir/skills"
+}
+
 if [ "$INSTALL_CLAUDE" -eq 1 ]; then
-  install_to "Claude Code" "$HOME/.claude/skills"
+  install_if_available "Claude Code" "$HOME/.claude"
 fi
 if [ "$INSTALL_CODEX" -eq 1 ]; then
-  install_to "Codex" "$HOME/.agents/skills"
+  install_if_available "Codex" "$HOME/.agents"
 fi
 if [ "$INSTALL_QWEN" -eq 1 ]; then
-  install_to "Qwen Code" "$HOME/.qwen/skills"
+  install_if_available "Qwen Code" "$HOME/.qwen"
 fi
 
 echo "Installation complete. Restart an agent session if the new skills do not appear."
