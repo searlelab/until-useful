@@ -1,4 +1,4 @@
-# Until Useful
+# Iterate *Until Useful*
 
 Until Useful is a portable six-skill workflow for open coding-agent sessions:
 
@@ -9,30 +9,8 @@ Until Useful is a portable six-skill workflow for open coding-agent sessions:
 5. `uu-revise`: adjudicate pasted review feedback and implement justified fixes
 6. `uu-summarize`: return one concise commit title for the current changeset
 
-A typical loop is:
-
-```text
-uu-propose (optional) -> uu-plan -> worker creates docs/uu-<task-slug>.md
-                                           -> implementation -> uu-review
-                                                                  |
-                                   optional pre-merge sanity check v
-                                                       uu-second-opinion
-                                                                  |
-                                                                  v
-                                                             uu-review
-                                                                  |
-                                                                  v
-                                                             uu-revise
-                                                                  |
-                                                                  v
-                                                           repeat as desired
-                                                                  |
-                                                                  v
-                                                           uu-summarize
-```
-
 ## Interactive-session design
-
+<img align="right" src="docs/uu_loop.png" width=400 style="margin-left: 15px;">
 These skills are designed for open sessions that already have the repository and conversation context. They do not launch new agents, use non-interactive execution, commit changes, push branches, change the active model, or make approval decisions. They are a manual handoff protocol, not an autonomous workflow: the user selects work, adds context to handoffs, interprets reviews, performs final code review, and commits.
 
 Select the model and reasoning level in the current session. Enter the host's native Plan mode before invoking `uu-plan`. When a host has no Plan mode, the skill uses a read-only fallback and reports that enforcement limitation.
