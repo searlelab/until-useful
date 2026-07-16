@@ -26,9 +26,9 @@ Use `uu-second-opinion` rarely, after `uu-review` approves, as a pre-merge sanit
 | Propose | `/uu-propose notes` | `$uu-propose notes` | `/uu-propose notes` |
 | Plan | `/uu-plan proposal` | `$uu-plan proposal` | `/uu-plan proposal` |
 | Review | `/uu-review agent summary` | `$uu-review agent summary` | `/uu-review agent summary` |
-| Second opinion | `/uu-second-opinion` | `$uu-second-opinion` | `/uu-second-opinion` |
 | Revise | `/uu-revise reviewer report` | `$uu-revise reviewer report` | `/uu-revise reviewer report` |
 | Summarize | `/uu-summarize` | `$uu-summarize` | `/uu-summarize` |
+| Second opinion | `/uu-second-opinion` | `$uu-second-opinion` | `/uu-second-opinion` |
 
 Large summaries, reviews, proposals, and notes can be pasted as multiline text after the invocation.
 
