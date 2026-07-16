@@ -5,9 +5,9 @@ Until Useful is a portable six-skill workflow for open coding-agent sessions:
 1. `uu-propose`: explore a user-supplied direction and recommend one problem to plan
 2. `uu-plan`: create an implementation-ready plan from a pasted proposal
 3. `uu-review`: review another coding agent's work from its pasted summary
-4. `uu-second-opinion`: independently audit an approved changeset from a fresh session
-5. `uu-revise`: adjudicate pasted review feedback and implement justified fixes
-6. `uu-summarize`: return one concise commit title for the current changeset
+4. `uu-revise`: adjudicate pasted review feedback and implement justified fixes
+5. `uu-summarize`: return one concise commit title for the current changeset
+6. `uu-second-opinion`: independently audit an approved changeset from a fresh session
 
 ## Interactive-session design
 <img align="right" src="docs/uu_loop.png" width=500 style="margin-left: 15px;">
@@ -26,9 +26,9 @@ Use `uu-second-opinion` rarely, after `uu-review` approves, as a pre-merge sanit
 | Propose | `/uu-propose notes` | `$uu-propose notes` | `/uu-propose notes` |
 | Plan | `/uu-plan proposal` | `$uu-plan proposal` | `/uu-plan proposal` |
 | Review | `/uu-review agent summary` | `$uu-review agent summary` | `/uu-review agent summary` |
-| Second opinion | `/uu-second-opinion` | `$uu-second-opinion` | `/uu-second-opinion` |
 | Revise | `/uu-revise reviewer report` | `$uu-revise reviewer report` | `/uu-revise reviewer report` |
 | Summarize | `/uu-summarize` | `$uu-summarize` | `/uu-summarize` |
+| Second opinion | `/uu-second-opinion` | `$uu-second-opinion` | `/uu-second-opinion` |
 
 Large summaries, reviews, proposals, and notes can be pasted as multiline text after the invocation.
 
