@@ -11,8 +11,8 @@ Turn the text after the invocation into one evidence-backed problem the user may
 
 ## Rules
 
-- Inspect the repository before recommending work. Do not edit, stage, commit, or push.
-- Recommend one problem, not a roadmap or implementation plan.
+- Inspect the repository before recommending work. Do not edit. Never stage, commit, or push; only the human may do so.
+- Recommend one problem, not a roadmap or implementation plan. If no candidate is sufficiently supported, decline to recommend work.
 - Do not claim product-priority authority. State uncertainty and inferences.
 - Do not recommend work already completed by the current changeset.
 
@@ -20,8 +20,8 @@ Turn the text after the invocation into one evidence-backed problem the user may
 
 1. Read repository instructions, relevant documentation, current changes, history, implementation, and tests.
 2. Turn the user's direction into concrete, repository-supported candidates; compare impact, risk, leverage, evidence, and dependency order.
-3. Recommend the strongest candidate for the user's consideration.
+3. Recommend the strongest candidate for the user's consideration, or explain why the evidence does not support a worthwhile recommendation and identify the smallest missing evidence needed to revisit the direction.
 
 ## Report
 
-Use concise sections: **Problem**, **Why this candidate**, **Evidence**, **Desired outcome**, **Boundaries and risks**, and **Planning prompt**. Cite paths or symbols for material claims. End with a compact proposal ready to paste into `uu-plan`; do not prescribe file-by-file changes.
+When recommending work, use concise sections: **Problem**, **Why this candidate**, **Evidence**, **Desired outcome**, **Boundaries and risks**, and **Planning prompt**. Cite paths or symbols for material claims. End with a compact proposal ready to paste into `uu-plan`; do not prescribe file-by-file changes. When declining, state that no recommendation is justified, summarize the evidence gap, and name the smallest evidence needed to revisit it.

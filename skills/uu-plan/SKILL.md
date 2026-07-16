@@ -12,9 +12,9 @@ Plan the text after the invocation against the open repository. Treat it as inte
 ## Rules
 
 - Use native Plan mode when available. If its mode state is visible and not Plan mode, ask the user to switch. Otherwise remain read-only and say so.
-- Do not edit, create artifacts, commit, push, or write the plan to disk.
+- Do not edit, create artifacts, or write the plan to disk. Never stage, commit, or push; only the human may do so.
 - Derive a concise filesystem-safe `<task-slug>` and state `docs/uu-<task-slug>.md` as the canonical plan path.
-- The first implementation step must tell the worker to create that file from the approved plan before changing code. It stays unchanged for the work loop; material plan changes return to the user and planner.
+- The first implementation step must tell the worker to create that file verbatim from the approved plan before changing code. It stays unchanged for the work loop; material plan changes return to the human, who may update it manually before the next handoff.
 
 ## Method
 

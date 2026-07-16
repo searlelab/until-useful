@@ -12,8 +12,8 @@ Revise the current changeset from the pasted review and user notes. A review fin
 ## Rules
 
 - Read repository instructions, the relevant `docs/uu-<task-slug>.md` plan, affected code, and tests before editing.
-- Do not edit the canonical plan file. Other documentation may change when justified by the approved plan or accepted finding.
-- Preserve unrelated changes. Make the smallest coherent correction. Do not commit, push, rewrite history, or use destructive Git operations.
+- Do not edit the canonical plan file after its initial creation; only the human may revise it. Other documentation may change when justified by the approved plan or accepted finding.
+- Preserve unrelated changes. Make the smallest coherent correction. Never stage, commit, or push; only the human may do so. Do not rewrite history or use destructive Git operations.
 
 ## Method
 

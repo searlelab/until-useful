@@ -9,6 +9,6 @@ user-invocable: true
 
 Inspect repository instructions, the canonical `docs/uu-<task-slug>.md` plan, the current staged and unstaged changes, untracked files, relevant reviewed range, and recent commit subjects. Choose the primary behavioral outcome.
 
-Return exactly one imperative, specific commit-title line ending with ` re: docs/uu-<task-slug>.md`: no Markdown, quotes, list, explanation, or period. Keep the complete line under 90 characters plus the length of the task slug. Use a conventional-commit prefix only when the repository consistently does. Do not edit, stage, commit, or push.
+Return exactly one imperative, specific commit-title line ending with ` re: docs/uu-<task-slug>.md`: no Markdown, quotes, list, explanation, or period. Keep the complete line under 90 characters plus the length of the task slug. Use a conventional-commit prefix only when the repository consistently does. Do not edit. Never stage, commit, or push; only the human may do so.
 
 If no identifiable current changeset exists, return exactly: `No current changeset to summarize`

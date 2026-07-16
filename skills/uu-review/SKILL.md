@@ -11,7 +11,7 @@ Review the current changeset against its canonical `docs/uu-<task-slug>.md` plan
 
 ## Rules
 
-- Read repository instructions, the canonical plan, and the actual change surface. Do not edit, write, stage, commit, or push.
+- Read repository instructions, the canonical plan, and the actual change surface. Do not edit or write. Never stage, commit, or push; only the human may do so.
 - Identify the changeset from context, status, diffs, untracked files, and history. If necessary, ask for the plan path or commit/range.
 - Verify material worker claims and plan outcomes in code and tests. Prefer focused executable checks to assertions.
 - Review only the intended changeset and necessary surrounding code. Report actionable issues, not preferences.
@@ -19,7 +19,7 @@ Review the current changeset against its canonical `docs/uu-<task-slug>.md` plan
 
 ## Check
 
-Look for missing plan outcomes, incorrect behavior, regressions, compatibility failures, unsafe edge cases, security or data-loss risks, concurrency defects, and missing meaningful tests. Ensure a regression test would fail without the fix. Use broader checks only when the change warrants them.
+Look for missing plan outcomes, incorrect behavior, regressions, compatibility failures, unsafe edge cases, security or data-loss risks, concurrency defects, and missing meaningful tests. Where practical, ensure a regression test would fail without the fix; otherwise, state why and describe the strongest available validation. Use broader checks only when the change warrants them.
 
 Before reporting, reset the review: re-audit the complete changed boundary after fix rounds; treat prior findings and passing tests as leads, not proof; independently validate affected integrations and meaningful edge cases.
 

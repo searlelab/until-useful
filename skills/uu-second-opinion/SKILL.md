@@ -17,9 +17,9 @@ Perform a clean-room audit of an approved changeset. Use this rarely as an optio
 
 ## Rules
 
-- Read repository instructions, the canonical plan, the actual change surface, and necessary surrounding code. Do not edit, write, stage, commit, or push.
+- Read repository instructions, the canonical plan, the actual change surface, and necessary surrounding code. Do not edit or write. Never stage, commit, or push; only the human may do so.
 - Audit the whole changeset from scratch. Verify implementation claims and behavior in code and tests; prefer focused executable checks to assertions.
-- Look for missing plan outcomes, incorrect behavior, regressions, compatibility failures, unsafe edge cases, security or data-loss risks, concurrency defects, and missing meaningful tests. Ensure a regression test would fail without the fix.
+- Look for missing plan outcomes, incorrect behavior, regressions, compatibility failures, unsafe edge cases, security or data-loss risks, concurrency defects, and missing meaningful tests. Where practical, ensure a regression test would fail without the fix; otherwise, state why and describe the strongest available validation.
 - This report is independent review evidence, not implementation direction. The user must paste it into `uu-review`; do not direct findings to `uu-revise`.
 
 ## Report
