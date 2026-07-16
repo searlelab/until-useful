@@ -1,18 +1,25 @@
 # Until Useful
 
-Until Useful is a portable five-skill workflow for open coding-agent sessions:
+Until Useful is a portable six-skill workflow for open coding-agent sessions:
 
 1. `uu-propose`: explore a user-supplied direction and recommend one problem to plan
 2. `uu-plan`: create an implementation-ready plan from a pasted proposal
 3. `uu-review`: review another coding agent's work from its pasted summary
-4. `uu-revise`: adjudicate pasted review feedback and implement justified fixes
-5. `uu-summarize`: return one concise commit title for the current changeset
+4. `uu-second-opinion`: independently audit an approved changeset from a fresh session
+5. `uu-revise`: adjudicate pasted review feedback and implement justified fixes
+6. `uu-summarize`: return one concise commit title for the current changeset
 
 A typical loop is:
 
 ```text
 uu-propose (optional) -> uu-plan -> worker creates docs/uu-<task-slug>.md
                                            -> implementation -> uu-review
+                                                                  |
+                                   optional pre-merge sanity check v
+                                                       uu-second-opinion
+                                                                  |
+                                                                  v
+                                                             uu-review
                                                                   |
                                                                   v
                                                              uu-revise
@@ -32,6 +39,8 @@ Select the model and reasoning level in the current session. Enter the host's na
 
 `uu-plan` states a canonical plan path, `docs/uu-<task-slug>.md`. Because Plan modes are often read-only, the worker creates that document from the approved plan as its first implementation action. It carries durable task intent through the loop. `uu-review` reads it but never writes repository files; `uu-revise` reads it but must not modify that plan file, while still being able to update other documentation when the approved work requires it. Pasted worker and reviewer reports carry the evolving implementation and review context.
 
+Use `uu-second-opinion` rarely, after `uu-review` approves, as a pre-merge sanity check. Start a fresh session and invoke it without arguments; give that auditor the canonical goal document and repository state, but not worker summaries, prior reviews, or revision narratives. If available, select a different model family. Its report is not sent to `uu-revise`: paste it into the original-context `uu-review` session, which verifies the findings and produces the only review output that may be handed to `uu-revise`. Session freshness and model choice are procedural recommendations that the skill cannot enforce.
+
 ## Invocation
 
 | Workflow | Claude Code | Codex | Qwen Code |
@@ -39,6 +48,7 @@ Select the model and reasoning level in the current session. Enter the host's na
 | Propose | `/uu-propose notes` | `$uu-propose notes` | `/uu-propose notes` |
 | Plan | `/uu-plan proposal` | `$uu-plan proposal` | `/uu-plan proposal` |
 | Review | `/uu-review agent summary` | `$uu-review agent summary` | `/uu-review agent summary` |
+| Second opinion | `/uu-second-opinion` | `$uu-second-opinion` | `/uu-second-opinion` |
 | Revise | `/uu-revise reviewer report` | `$uu-revise reviewer report` | `/uu-revise reviewer report` |
 | Summarize | `/uu-summarize` | `$uu-summarize` | `/uu-summarize` |
 
@@ -59,7 +69,7 @@ Install only selected agents:
 ./install.sh --qwen
 ```
 
-Existing `uu-*` skill folders are preserved. Replace them explicitly:
+Existing same-named `uu-*` skill folders are refreshed on every installation; unrelated skills are not changed. `--force` remains accepted for compatibility but is no longer needed. Existing scripts may continue to use it:
 
 ```sh
 ./install.sh --all --force

@@ -7,7 +7,7 @@ user-invocable: true
 
 # UU Review
 
-Review the current changeset against its canonical `docs/uu-<task-slug>.md` plan. Treat pasted worker summaries and user notes as leads, not evidence.
+Review the current changeset against its canonical `docs/uu-<task-slug>.md` plan. Treat pasted worker summaries and user notes as leads, not evidence. A pasted `uu-second-opinion` report is a high-value review input, not direct implementation direction.
 
 ## Rules
 
@@ -15,10 +15,13 @@ Review the current changeset against its canonical `docs/uu-<task-slug>.md` plan
 - Identify the changeset from context, status, diffs, untracked files, and history. If necessary, ask for the plan path or commit/range.
 - Verify material worker claims and plan outcomes in code and tests. Prefer focused executable checks to assertions.
 - Review only the intended changeset and necessary surrounding code. Report actionable issues, not preferences.
+- Investigate every substantive `uu-second-opinion` finding. Retain it unless the code, canonical plan, tests, or other concrete repository evidence shows it is incorrect, already resolved, or not a real defect. Do not reject it merely as out of scope; give specific evidence for every rejection.
 
 ## Check
 
 Look for missing plan outcomes, incorrect behavior, regressions, compatibility failures, unsafe edge cases, security or data-loss risks, concurrency defects, and missing meaningful tests. Ensure a regression test would fail without the fix. Use broader checks only when the change warrants them.
+
+Before reporting, reset the review: re-audit the complete changed boundary after fix rounds; treat prior findings and passing tests as leads, not proof; independently validate affected integrations and meaningful edge cases.
 
 ## Report
 

@@ -3,7 +3,6 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 SKILLS_DIR="$SCRIPT_DIR/skills"
-FORCE=0
 INSTALL_CLAUDE=0
 INSTALL_CODEX=0
 INSTALL_QWEN=0
@@ -25,7 +24,7 @@ Options:
   --claude   Install for Claude Code
   --codex    Install for Codex
   --qwen     Install for Qwen Code
-  --force    Replace existing folders with the same skill names
+  --force    Accepted for compatibility; existing uu-* folders are replaced by default
   --remove-legacy
              Remove the earlier project-plan, project-review, project-revise,
              project-summarize, and project-propose skill folders
@@ -50,7 +49,7 @@ while [ "$#" -gt 0 ]; do
       INSTALL_QWEN=1
       ;;
     --force)
-      FORCE=1
+      :
       ;;
     --remove-legacy)
       REMOVE_LEGACY=1
@@ -84,16 +83,11 @@ install_to() {
     target="$destination/$skill_name"
 
     if [ -e "$target" ] || [ -L "$target" ]; then
-      if [ "$FORCE" -eq 1 ]; then
-        rm -rf "$target"
-      else
-        echo "$agent_name: skipped $skill_name, already exists"
-        continue
-      fi
+      rm -rf "$target"
     fi
 
     cp -R "$skill_dir" "$target"
-    echo "$agent_name: installed $skill_name"
+    echo "$agent_name: updated $skill_name"
   done
 
   if [ "$REMOVE_LEGACY" -eq 1 ]; then

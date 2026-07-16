@@ -1,0 +1,5 @@
+interface:
+  display_name: "UU Second Opinion"
+  short_description: "Independently audit an approved changeset from a fresh session"
+policy:
+  allow_implicit_invocation: false
