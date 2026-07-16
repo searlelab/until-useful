@@ -119,11 +119,25 @@ install_if_available() {
   install_to "$agent_name" "$agent_dir/skills"
 }
 
+install_codex_if_available() {
+  if [ -d "$HOME/.agents" ]; then
+    install_to "Codex (.agents)" "$HOME/.agents/skills"
+  fi
+
+  if [ -d "$HOME/.codex" ]; then
+    install_to "Codex (.codex)" "$HOME/.codex/skills"
+  fi
+
+  if [ ! -d "$HOME/.agents" ] && [ ! -d "$HOME/.codex" ]; then
+    echo "Codex: skipped because neither $HOME/.agents nor $HOME/.codex exists"
+  fi
+}
+
 if [ "$INSTALL_CLAUDE" -eq 1 ]; then
   install_if_available "Claude Code" "$HOME/.claude"
 fi
 if [ "$INSTALL_CODEX" -eq 1 ]; then
-  install_if_available "Codex" "$HOME/.agents"
+  install_codex_if_available
 fi
 if [ "$INSTALL_QWEN" -eq 1 ]; then
   install_if_available "Qwen Code" "$HOME/.qwen"
