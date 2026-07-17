@@ -16,6 +16,7 @@ Review the current changeset against its canonical `docs/uu-<task-slug>.md` plan
 - Verify material worker claims and plan outcomes in code and tests. Prefer focused executable checks to assertions.
 - Review only the intended changeset and necessary surrounding code. Report actionable issues, not preferences.
 - Investigate every substantive `uu-second-opinion` finding. Retain it unless the code, canonical plan, tests, or other concrete repository evidence shows it is incorrect, already resolved, or not a real defect. Do not reject it merely as out of scope; give specific evidence for every rejection.
+- When a second-opinion report includes lower-priority observations with a P0/P1 finding, adjudicate them in that same review loop. They do not independently reopen work.
 
 ## Check
 

@@ -7,7 +7,7 @@ user-invocable: true
 
 # UU Second Opinion
 
-Perform a clean-room audit of an approved changeset. Use this rarely as an optional pre-merge sanity check, normally after `uu-review` has approved.
+Perform a bounded clean-room audit of an approved changeset. Use this rarely as an optional pre-merge sanity check for material risks missed by the plan/review/revise loop, normally after `uu-review` has approved.
 
 ## Setup
 
@@ -18,17 +18,15 @@ Perform a clean-room audit of an approved changeset. Use this rarely as an optio
 ## Rules
 
 - Read repository instructions, the canonical plan, the actual change surface, and necessary surrounding code. Do not edit or write. Never stage, commit, or push; only the human may do so.
-- Audit the whole changeset from scratch. Verify implementation claims and behavior in code and tests; prefer focused executable checks to assertions.
-- Look for missing plan outcomes, incorrect behavior, regressions, compatibility failures, unsafe edge cases, security or data-loss risks, concurrency defects, and missing meaningful tests. Where practical, ensure a regression test would fail without the fix; otherwise, state why and describe the strongest available validation.
+- Audit the whole changeset from scratch, looking specifically for material missed risks: missing plan outcomes, incorrect behavior, severe regressions or compatibility failures, unsafe edge cases, security or data-loss risks, concurrency defects, and missing coverage that leaves such a risk unguarded. Do not hunt for preferences, minor cleanup, or speculative improvements.
+- Report `REQUEST CHANGES` only for a substantiated P0/P1 finding with concrete repository evidence, a credible failure scenario, and material impact. Where practical, verify it with a focused executable check; otherwise, state why and describe the strongest available validation.
+- Do not report P2/P3 findings on a clean audit. If a P0/P1 finding already requires `uu-review` adjudication, include related lower-priority observations only as clearly labeled, non-reopening input for that same review loop that can be cleaned up if they are easy.
 - This report is independent review evidence, not implementation direction. The user must paste it into `uu-review`; do not direct findings to `uu-revise`.
 
 ## Report
 
-Lead with `APPROVE`, `APPROVE WITH MINOR ISSUES`, `REQUEST CHANGES`, or `BLOCKED`. Group related findings by priority:
+Lead with `APPROVE`, `REQUEST CHANGES`, or `BLOCKED`. Group any material findings by priority:
 
 - **P0:** catastrophic risk
 - **P1:** blocking correctness or compatibility failure
-- **P2:** defect or important missing coverage
-- **P3:** limited-impact follow-up
-
-For each finding, give evidence, failure scenario, impact, and correction. Then briefly state the plan audit, checks actually run and outcomes, and residual risks. Use `REQUEST CHANGES` for P0–P2; use `APPROVE WITH MINOR ISSUES` only for P3. End by directing the user to paste this report into `uu-review` for repository-context adjudication before any revision.
+For each P0/P1 finding, give evidence, failure scenario, impact, and correction. If applicable, place P2/P3 observations under **Lower-priority observations for uu-review**; they do not affect the status or independently reopen work. When no P0/P1 finding is substantiated, use `APPROVE` and state that no material missed plan, correctness, compatibility, safety, or security risk was found. Then briefly state the plan audit, checks actually run and outcomes, and residual risks. End by directing the user to paste this report into `uu-review` for repository-context adjudication before any revision.
