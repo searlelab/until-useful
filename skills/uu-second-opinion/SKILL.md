@@ -21,6 +21,7 @@ Perform a bounded clean-room audit of an approved changeset. Use this rarely as 
 - Audit the whole changeset from scratch, looking specifically for material missed risks: missing plan outcomes, incorrect behavior, severe regressions or compatibility failures, unsafe edge cases, security or data-loss risks, concurrency defects, and missing coverage that leaves such a risk unguarded. Do not hunt for preferences, minor cleanup, or speculative improvements.
 - Report `REQUEST CHANGES` only for a substantiated P0/P1 finding with concrete repository evidence, a credible failure scenario, and material impact. Where practical, verify it with a focused executable check; otherwise, state why and describe the strongest available validation.
 - Do not report P2/P3 findings on a clean audit. If a P0/P1 finding already requires `uu-review` adjudication, include related lower-priority observations only as clearly labeled, non-reopening input for that same review loop that can be cleaned up if they are easy.
+- If you determine a P0/P1 issue is present, you must remember to not stop at the first issue. Continue to produce a full review and uncover all potential concerns that are P1 or worse.
 - This report is independent review evidence, not implementation direction. The user must paste it into `uu-review`; do not direct findings to `uu-revise`.
 
 ## Report
