@@ -1,0 +1,22 @@
+[claude]
+allowed_commands = [
+  "git status",
+  "git diff",
+  "git log",
+  "git show",
+  "python -B -m unittest",
+]
+
+[claude.roles.review]
+model = "sonnet"
+minimum_model = "claude-sonnet-5"
+effort = "medium"
+
+[claude.roles.second_opinion]
+model = "opus"
+minimum_model = "claude-opus-5"
+effort = "medium"
+
+[claude.roles.summarize]
+model = "haiku"
+minimum_model = "claude-haiku-4-5"

@@ -7,7 +7,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from .adapters import AdapterError, AdapterRun, ClaudeAdapter, FakeAdapter, HarnessAdapter, new_session_id
+from .adapters import (
+    AdapterError, AdapterRun, ClaudeAdapter, FakeAdapter, HarnessAdapter, StructuredOutputError, new_session_id,
+)
 from .database import Database, utc_now
 from .git_state import snapshot as git_snapshot
 from .models import (
@@ -15,6 +17,7 @@ from .models import (
     CompletionStatus,
     ContextClass,
     Disposition,
+    InputDecision,
     NextAction,
     Protocol,
     ProtocolResult,
@@ -23,7 +26,9 @@ from .models import (
     ReviewStatus,
     TaskState,
     TERMINAL_STATES,
+    pipeline_outcome,
 )
+from .policy import load_policy
 
 
 class WorkflowError(RuntimeError):
@@ -48,6 +53,13 @@ class Runtime:
         self.database.migrate()
 
     def start(self, request: dict[str, Any]) -> dict[str, Any]:
+        return self._register(request, TaskState.READY_FOR_INITIAL_REVIEW)
+
+    def register_plan(self, request: dict[str, Any]) -> dict[str, Any]:
+        request = {**request, "handoff_report": ""}
+        return self._register(request, TaskState.WAITING_FOR_INITIAL_IMPLEMENTATION)
+
+    def _register(self, request: dict[str, Any], initial_state: TaskState) -> dict[str, Any]:
         required = {"title", "repository_path", "canonical_plan_path", "risk_profile", "handoff_report"}
         missing = sorted(required - request.keys())
         if missing:
@@ -68,9 +80,14 @@ class Runtime:
         if risk not in RISK_PROFILES:
             raise WorkflowError(f"unknown risk profile: {risk}")
         adapter_name = request.get("adapter", "claude")
-        adapter_config = request.get("adapter_config", {})
+        adapter_config = dict(request.get("adapter_config", {}))
         if adapter_name not in {"claude", "fake"}:
             raise WorkflowError(f"unsupported adapter: {adapter_name}")
+        if adapter_name == "claude":
+            adapter_config = load_policy(repository, adapter_config).to_dict() | {
+                key: value for key, value in adapter_config.items()
+                if key in {"executable", "timeout", "enforce_model", "skill_root"}
+            }
 
         task_id = request.get("task_id", _uuid())
         context_id = _uuid()
@@ -82,11 +99,16 @@ class Runtime:
                 "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     task_id, request["title"], request.get("slug", _slug(request["title"])), str(repository),
-                    str(plan_relative), risk, TaskState.READY_FOR_INITIAL_REVIEW, context_id,
+                    str(plan_relative), risk, initial_state, context_id,
                     request["handoff_report"], request["handoff_report"], adapter_name,
                     json.dumps(adapter_config, sort_keys=True), now, now,
                 ),
             )
+            if initial_state == TaskState.WAITING_FOR_INITIAL_IMPLEMENTATION:
+                connection.execute(
+                    "UPDATE tasks SET pending_codex_purpose = ? WHERE id = ?",
+                    (Purpose.INITIAL_IMPLEMENTATION, task_id),
+                )
             connection.execute(
                 "INSERT INTO contexts(id, task_id, lineage_label, context_class, adapter, harness, session_id, "
                 "created_at, is_fresh) VALUES (?, ?, 'P1', ?, 'codex', 'codex-app', NULL, ?, 0)",
@@ -98,7 +120,7 @@ class Runtime:
                 (task_id, request.get("approval_notes", "Approved through Codex planning interaction"), now),
             )
             self.database.event(
-                connection, task_id, "TASK_REGISTERED", None, TaskState.READY_FOR_INITIAL_REVIEW,
+                connection, task_id, "TASK_REGISTERED", None, initial_state,
                 {"constructive_context": "P1", "canonical_plan_path": str(plan_relative)},
             )
         return self.status(task_id)
@@ -115,6 +137,23 @@ class Runtime:
             "SELECT lineage_label, context_class, adapter, harness, model_label, session_id, created_at, retired_at "
             "FROM contexts WHERE task_id = ? ORDER BY created_at, lineage_label", (task_id,),
         )
+        usages = self.database.all(
+            "SELECT c.lineage_label, r.workflow_purpose, r.usage_json FROM runs r "
+            "LEFT JOIN contexts c ON c.id = r.context_id WHERE r.task_id = ? AND r.usage_json IS NOT NULL "
+            "ORDER BY r.sequence_number", (task_id,),
+        )
+        models_by_context: dict[str, list[dict[str, Any]]] = {}
+        for row in usages:
+            usage = json.loads(row["usage_json"] or "{}")
+            model = usage.get("observed_model")
+            if model:
+                models_by_context.setdefault(row["lineage_label"] or "unknown", []).append({
+                    "purpose": row["workflow_purpose"], "role": usage.get("requested_role"),
+                    "requested": usage.get("requested_model"), "effort": usage.get("requested_effort"),
+                    "observed": model,
+                })
+        for context in contexts:
+            context["model_history"] = models_by_context.get(context["lineage_label"], [])
         active_run = self.database.one(
             "SELECT id, protocol, workflow_purpose, started_at FROM runs WHERE task_id = ? AND status = 'RUNNING'",
             (task_id,),
@@ -123,6 +162,7 @@ class Runtime:
             "task_id": task_id,
             "title": task["title"],
             "state": task["state"],
+            "outcome": str(pipeline_outcome(task["state"])),
             "repository_path": task["repository_path"],
             "canonical_plan_path": task["canonical_plan_path"],
             "risk_profile": task["risk_profile"],
@@ -131,6 +171,7 @@ class Runtime:
             "review_epoch": task["review_epoch"],
             "stop_reason": task["stop_reason"],
             "final_title": task["final_title"],
+            "model_policy": json.loads(task["adapter_config_json"] or "{}") if task["adapter_name"] == "claude" else {},
             "active_run": active_run,
             "contexts": contexts,
         }
@@ -139,16 +180,18 @@ class Runtime:
         repository = str(Path(repository_path).expanduser().resolve())
         return self.database.all(
             "SELECT id, title, state, canonical_plan_path, updated_at FROM tasks WHERE repository_path = ? "
-            "AND state NOT IN (?, ?, ?) ORDER BY created_at DESC",
-            (repository, TaskState.WAITING_FOR_HUMAN_REVIEW, TaskState.BLOCKED, TaskState.STOPPED),
+            "AND state NOT IN (?, ?, ?, ?, ?) ORDER BY created_at DESC",
+            (repository, TaskState.WAITING_FOR_HUMAN_REVIEW, TaskState.NEEDS_INPUT, TaskState.FAILED,
+             TaskState.BLOCKED, TaskState.STOPPED),
         )
 
     def find_task(self, repository_path: str | Path) -> dict[str, Any] | None:
         repository = str(Path(repository_path).expanduser().resolve())
         return self.database.one(
-            "SELECT * FROM tasks WHERE repository_path = ? AND state NOT IN (?, ?, ?) "
+            "SELECT * FROM tasks WHERE repository_path = ? AND state NOT IN (?, ?, ?, ?, ?) "
             "ORDER BY created_at DESC LIMIT 1",
-            (repository, TaskState.WAITING_FOR_HUMAN_REVIEW, TaskState.BLOCKED, TaskState.STOPPED),
+            (repository, TaskState.WAITING_FOR_HUMAN_REVIEW, TaskState.NEEDS_INPUT, TaskState.FAILED,
+             TaskState.BLOCKED, TaskState.STOPPED),
         )
 
     def next_action(self, task_id: str) -> NextAction:
@@ -161,6 +204,38 @@ class Runtime:
             }
             if state in TERMINAL_STATES:
                 return NextAction(ActionOwner.HUMAN, None, None, None, None, False, plan_inputs, task["stop_reason"] or state)
+
+            if state == TaskState.WAITING_FOR_INITIAL_IMPLEMENTATION:
+                return NextAction(
+                    ActionOwner.CODEX, Purpose.INITIAL_IMPLEMENTATION, Protocol.UU_PLAN,
+                    None, "P1", False, plan_inputs,
+                    "Complete the approved uu-plan implementation and record its result.",
+                )
+
+            if state == TaskState.WAITING_FOR_CODEX_INPUT_RESOLUTION:
+                human_input = connection.execute(
+                    "SELECT * FROM human_inputs WHERE task_id = ? AND status = 'PENDING' ORDER BY id DESC LIMIT 1",
+                    (task_id,),
+                ).fetchone()
+                if not human_input:
+                    raise WorkflowError("input-resolution state has no pending human input")
+                source = connection.execute("SELECT * FROM runs WHERE id = ?", (human_input["source_run_id"],)).fetchone()
+                preserved = json.loads(source["normalized_result_json"] or "{}") if source else {}
+                diagnostics = json.loads(
+                    (source["validation_diagnostics_json"] or source["error_json"] or "{}") if source else "{}"
+                )
+                plan_path = Path(task["repository_path"]) / task["canonical_plan_path"]
+                return NextAction(
+                    ActionOwner.CODEX, Purpose.INPUT_RESOLUTION, Protocol.UU_REVISE, None, "P1", False,
+                    {
+                        **plan_inputs, "canonical_plan": plan_path.read_text(encoding="utf-8"),
+                        "human_input_id": human_input["id"], "human_guidance": human_input["guidance"],
+                        "triggering_run": dict(source) if source else None, "preserved_payload": preserved,
+                        "validation_diagnostics": diagnostics,
+                        "allowed_decisions": [str(item) for item in InputDecision],
+                    },
+                    "Resolve the preserved pipeline result in the original P1 Codex task.",
+                )
 
             if state == TaskState.READY_FOR_INITIAL_REVIEW:
                 context = self._ensure_initial_reviewer(connection, task)
@@ -187,10 +262,21 @@ class Runtime:
             if state == TaskState.READY_FOR_CHALLENGE_ADJUDICATION:
                 prior = self._context(connection, task["prior_review_context_id"])
                 challenge = self._latest_result(connection, task_id, Purpose.CHALLENGE)
+                expected_ids = [
+                    row["external_id"] for row in connection.execute(
+                        "SELECT f.external_id FROM findings f JOIN runs r ON r.id = f.source_run_id "
+                        "WHERE f.task_id = ? AND f.status = 'OPEN' AND r.workflow_purpose = ? "
+                        "ORDER BY f.external_id",
+                        (task_id, Purpose.CHALLENGE),
+                    ).fetchall()
+                ]
                 return NextAction(
                     ActionOwner.CLAUDE, Purpose.CHALLENGE_ADJUDICATION, Protocol.UU_REVIEW,
                     prior["session_id"], prior["lineage_label"], False,
-                    {**plan_inputs, "challenge_report": challenge["cleaned_report"] or challenge["raw_output"]},
+                    {
+                        **plan_inputs, "challenge_report": challenge["cleaned_report"] or challenge["raw_output"],
+                        "expected_disposition_ids": expected_ids,
+                    },
                 )
             if state == TaskState.WAITING_FOR_CHALLENGE_REVISION:
                 return self._codex_action(connection, task, Purpose.CHALLENGE_REVISION, plan_inputs)
@@ -215,6 +301,32 @@ class Runtime:
             return {"action": action.to_dict(), "status": self.status(task_id)}
         task = self.task(task_id)
         adapter = self._adapter(task)
+        pending_repair = self.database.one(
+            "SELECT source.* FROM runs source WHERE source.task_id = ? AND source.status = 'INVALID_OUTPUT' "
+            "AND source.repair_of_run_id IS NULL "
+            "AND NOT EXISTS (SELECT 1 FROM runs repair WHERE repair.repair_of_run_id = source.id) "
+            "ORDER BY source.sequence_number DESC LIMIT 1", (task_id,),
+        )
+        if pending_repair and isinstance(adapter, ClaudeAdapter):
+            repair_action = replace(action, fresh=False)
+            original_error = self._stored_structured_error(task, pending_repair)
+            repair_run_id = self._begin_run(
+                task, repair_action, repair_of_run_id=pending_repair["id"], repair_prompt_version=1,
+            )
+            try:
+                run = adapter.run(
+                    repair_action, Path(task["repository_path"]), repair=True, repair_error=original_error,
+                )
+                self._complete_run(task_id, repair_run_id, repair_action, run)
+            except StructuredOutputError as repair_error:
+                self._invalid_run(
+                    task_id, repair_run_id, repair_error, final=True, source_run_id=pending_repair["id"],
+                )
+                raise
+            except Exception as repair_error:
+                self._fail_run(task_id, repair_run_id, repair_error)
+                raise
+            return {"action": action.to_dict(), "result": run.result.to_dict(), "status": self.status(task_id)}
         if isinstance(adapter, FakeAdapter):
             completed = self.database.require_one(
                 "SELECT COUNT(*) AS count FROM runs WHERE task_id = ? AND status = 'COMPLETED' AND context_id != ?",
@@ -225,6 +337,24 @@ class Runtime:
         try:
             run = adapter.run(action, Path(task["repository_path"]))
             self._complete_run(task_id, run_id, action, run)
+        except StructuredOutputError as error:
+            self._invalid_run(task_id, run_id, error)
+            repair_action = replace(action, fresh=False)
+            repair_run_id = self._begin_run(
+                self.task(task_id), repair_action, repair_of_run_id=run_id, repair_prompt_version=1,
+            )
+            try:
+                repaired = adapter.run(
+                    repair_action, Path(task["repository_path"]), repair=True, repair_error=error,
+                )
+                self._complete_run(task_id, repair_run_id, repair_action, repaired)
+                run = repaired
+            except StructuredOutputError as repair_error:
+                self._invalid_run(task_id, repair_run_id, repair_error, final=True, source_run_id=run_id)
+                raise
+            except Exception as repair_error:
+                self._fail_run(task_id, repair_run_id, repair_error)
+                raise
         except Exception as error:
             self._fail_run(task_id, run_id, error)
             raise
@@ -245,11 +375,17 @@ class Runtime:
         with self.database.transaction(immediate=True) as connection:
             task = self._task(connection, task_id)
             state = TaskState(task["state"])
-            if state == TaskState.WAITING_FOR_CODEX_REVISION:
+            if state == TaskState.WAITING_FOR_INITIAL_IMPLEMENTATION:
+                purpose = Purpose.INITIAL_IMPLEMENTATION
+                protocol = Protocol.UU_PLAN
+                next_state = TaskState.READY_FOR_INITIAL_REVIEW
+            elif state == TaskState.WAITING_FOR_CODEX_REVISION:
                 purpose = Purpose.REVISION_VERIFICATION
+                protocol = Protocol.UU_REVISE
                 next_state = TaskState.READY_FOR_REVISION_VERIFICATION
             elif state == TaskState.WAITING_FOR_CHALLENGE_REVISION:
                 purpose = Purpose.CHALLENGE_REVISION
+                protocol = Protocol.UU_REVISE
                 next_state = TaskState.READY_FOR_CHALLENGE_VERIFICATION
             else:
                 raise WorkflowError(f"task is not waiting for Codex: {state}")
@@ -265,18 +401,21 @@ class Runtime:
                 "started_at, finished_at, raw_output, cleaned_report, normalized_result_json) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    run_id, task_id, task["constructive_context_id"], Protocol.UU_REVISE, purpose, sequence,
+                    run_id, task_id, task["constructive_context_id"], protocol, purpose, sequence,
                     result.status, now, now, json.dumps(payload, sort_keys=True), result.report_markdown or result.summary,
                     json.dumps(result.to_dict(), sort_keys=True),
                 ),
             )
-            if result.status != CompletionStatus.COMPLETED:
-                next_state = TaskState.BLOCKED
+            if result.status == CompletionStatus.BLOCKED:
+                next_state = TaskState.NEEDS_INPUT
+            elif result.status == CompletionStatus.FAILED:
+                next_state = TaskState.FAILED
+            initial_handoff = result.report_markdown or result.summary if purpose == Purpose.INITIAL_IMPLEMENTATION else task["initial_handoff"]
             connection.execute(
-                "UPDATE tasks SET state = ?, pending_codex_purpose = NULL, last_codex_handoff = ?, "
+                "UPDATE tasks SET state = ?, pending_codex_purpose = NULL, initial_handoff = ?, last_codex_handoff = ?, "
                 "stop_reason = ?, updated_at = ? WHERE id = ?",
                 (
-                    next_state, result.report_markdown or result.summary,
+                    next_state, initial_handoff, result.report_markdown or result.summary,
                     None if result.status == CompletionStatus.COMPLETED else result.summary or result.status,
                     now, task_id,
                 ),
@@ -326,6 +465,184 @@ class Runtime:
             self.database.event(connection, task_id, "HUMAN_STOP", before, TaskState.STOPPED, {"reason": reason})
         return self.status(task_id)
 
+    def provide_input(self, task_id: str, guidance: str) -> dict[str, Any]:
+        guidance = guidance.strip()
+        if not guidance:
+            raise WorkflowError("human guidance must not be empty")
+        with self.database.transaction(immediate=True) as connection:
+            task = self._task(connection, task_id)
+            before = TaskState(task["state"])
+            if before not in {TaskState.NEEDS_INPUT, TaskState.BLOCKED}:
+                raise WorkflowError(f"task is not waiting for human input: {before}")
+            source = connection.execute(
+                "SELECT * FROM runs WHERE task_id = ? AND status IN ('INVALID_OUTPUT', 'FAILED', 'INTERRUPTED') "
+                "ORDER BY sequence_number DESC LIMIT 1", (task_id,),
+            ).fetchone()
+            source_id = source["id"] if source else None
+            prior = connection.execute(
+                "SELECT state_before FROM events WHERE task_id = ? AND run_id IS ? "
+                "AND state_before IS NOT NULL ORDER BY id DESC LIMIT 1", (task_id, source_id),
+            ).fetchone()
+            now = utc_now()
+            adapter_config = json.loads(task["adapter_config_json"] or "{}")
+            if task["adapter_name"] == "claude" and "roles" not in adapter_config:
+                # Schema-v1 tasks stored the former all-Opus default as if it were an explicit override.
+                # Adopt the v2 role defaults when the human resumes that pipeline.
+                for key in ("model", "minimum_model", "pin_model", "effort"):
+                    adapter_config.pop(key, None)
+                adapter_config = load_policy(task["repository_path"], adapter_config).to_dict() | {
+                    key: value for key, value in adapter_config.items()
+                    if key in {"executable", "timeout", "enforce_model", "skill_root"}
+                }
+            cursor = connection.execute(
+                "INSERT INTO human_inputs(task_id, source_run_id, guidance, prior_state, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (task_id, source_id, guidance, prior["state_before"] if prior else None, now),
+            )
+            after = TaskState.WAITING_FOR_CODEX_INPUT_RESOLUTION
+            connection.execute(
+                "UPDATE tasks SET state = ?, pending_codex_purpose = ?, adapter_config_json = ?, updated_at = ? "
+                "WHERE id = ?",
+                (after, Purpose.INPUT_RESOLUTION, json.dumps(adapter_config, sort_keys=True), now, task_id),
+            )
+            self.database.event(
+                connection, task_id, "HUMAN_INPUT_PROVIDED", before, after,
+                {"human_input_id": cursor.lastrowid, "source_run_id": source_id, "guidance": guidance},
+            )
+        return {"status": self.status(task_id), "next_action": self.next_action(task_id).to_dict()}
+
+    def record_input_resolution(self, task_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            decision = InputDecision(str(payload.get("decision", "")))
+        except ValueError as error:
+            raise WorkflowError(f"invalid input-resolution decision: {payload.get('decision')!r}") from error
+        summary = str(payload.get("summary", "")).strip()
+        if not summary:
+            raise WorkflowError("input resolution requires a summary")
+        with self.database.transaction(immediate=True) as connection:
+            task = self._task(connection, task_id)
+            before = TaskState(task["state"])
+            if before != TaskState.WAITING_FOR_CODEX_INPUT_RESOLUTION:
+                raise WorkflowError(f"task is not waiting for Codex input resolution: {before}")
+            human_input = connection.execute(
+                "SELECT * FROM human_inputs WHERE task_id = ? AND status = 'PENDING' ORDER BY id DESC LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            if not human_input:
+                raise WorkflowError("no pending human input exists")
+            source = connection.execute("SELECT * FROM runs WHERE id = ?", (human_input["source_run_id"],)).fetchone()
+            source_payload = json.loads(source["normalized_result_json"] or "{}") if source else {}
+            source_purpose = Purpose(source["workflow_purpose"]) if source else None
+            findings = source_payload.get("findings", [])
+            now = utc_now()
+            run_id = _uuid()
+            revision_increment = 0
+
+            if decision == InputDecision.REVISED:
+                if not payload.get("report_markdown"):
+                    raise WorkflowError("REVISED requires a revision report")
+                if source_purpose in {Purpose.CHALLENGE, Purpose.CHALLENGE_ADJUDICATION, Purpose.CHALLENGE_VERIFICATION}:
+                    after = TaskState.READY_FOR_CHALLENGE_VERIFICATION
+                else:
+                    after = TaskState.READY_FOR_REVISION_VERIFICATION
+                revision_increment = 1
+                if source:
+                    self._store_findings(connection, task_id, source["id"], ProtocolResult.from_dict(source_payload))
+            elif decision == InputDecision.RETRY:
+                if not source or source["status"] not in {"FAILED", "INTERRUPTED"}:
+                    raise WorkflowError("RETRY is allowed only for a resolved prerequisite or interruption")
+                if not human_input["prior_state"]:
+                    raise WorkflowError("RETRY cannot restore an unknown prior action")
+                after = TaskState(human_input["prior_state"])
+            elif decision == InputDecision.APPROVE:
+                material_ids = {item.get("id") for item in findings if item.get("priority") in {"P0", "P1", "P2"}}
+                dispositions = payload.get("dispositions", [])
+                if not isinstance(dispositions, list):
+                    raise WorkflowError("APPROVE dispositions must be an array")
+                if any(not isinstance(item, dict) for item in dispositions):
+                    raise WorkflowError("APPROVE dispositions must contain objects")
+                required_disposition_fields = {"finding_id", "disposition", "evidence"}
+                for item in dispositions:
+                    if not required_disposition_fields.issubset(item):
+                        raise WorkflowError(
+                            "every APPROVE disposition requires finding_id, disposition, and evidence"
+                        )
+                    if not isinstance(item["finding_id"], str):
+                        raise WorkflowError("APPROVE disposition finding_id must be a string")
+                    if item["disposition"] not in {str(value) for value in Disposition}:
+                        raise WorkflowError(f"invalid APPROVE disposition: {item['disposition']!r}")
+                    if not isinstance(item["evidence"], str) or not item["evidence"].strip():
+                        raise WorkflowError("APPROVE dispositions require concrete evidence")
+                finding_ids = {item.get("id") for item in findings}
+                disposition_ids = [item.get("finding_id") for item in dispositions]
+                if len(disposition_ids) != len(set(disposition_ids)) or set(disposition_ids) - finding_ids:
+                    raise WorkflowError("APPROVE dispositions must uniquely reference preserved findings")
+                covered = {
+                    item.get("finding_id") for item in dispositions
+                    if item.get("disposition") in {str(value) for value in Disposition}
+                    and str(item.get("evidence", "")).strip()
+                }
+                if material_ids - covered:
+                    raise WorkflowError(
+                        f"APPROVE requires evidence-backed dispositions for preserved material findings: "
+                        f"{sorted(material_ids - covered)}"
+                    )
+                if source:
+                    self._store_findings(connection, task_id, source["id"], ProtocolResult.from_dict(source_payload))
+                    for item in dispositions:
+                        connection.execute(
+                            "UPDATE findings SET status = 'RESOLVED', adjudication_run_id = ?, disposition = ?, "
+                            "disposition_evidence = ?, resolved_at = ? WHERE task_id = ? AND source_run_id = ? "
+                            "AND external_id = ?",
+                            (None, item["disposition"], item["evidence"], now, task_id, source["id"],
+                             item["finding_id"]),
+                        )
+                after = TaskState.READY_FOR_CHALLENGE if source_purpose in {
+                    Purpose.INITIAL_REVIEW, Purpose.REVISION_VERIFICATION,
+                } else TaskState.READY_FOR_FINAL_SUMMARY
+            elif decision == InputDecision.NEEDS_INPUT:
+                if not str(payload.get("question", "")).strip():
+                    raise WorkflowError("NEEDS_INPUT requires a focused question")
+                after = TaskState.NEEDS_INPUT
+            else:
+                attempts = payload.get("attempted_approaches", [])
+                evidence = payload.get("failure_evidence", [])
+                if not attempts or not evidence:
+                    raise WorkflowError("FAILED requires attempted_approaches and failure_evidence")
+                after = TaskState.FAILED
+
+            connection.execute(
+                "INSERT INTO runs(id, task_id, context_id, protocol, workflow_purpose, sequence_number, status, "
+                "started_at, finished_at, raw_output, cleaned_report, normalized_result_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, ?)",
+                (run_id, task_id, task["constructive_context_id"], Protocol.UU_REVISE, Purpose.INPUT_RESOLUTION,
+                 self._next_sequence(connection, task_id), now, now, json.dumps(payload, sort_keys=True),
+                 payload.get("report_markdown") or summary, json.dumps(payload, sort_keys=True)),
+            )
+            if decision == InputDecision.APPROVE and source:
+                connection.execute(
+                    "UPDATE findings SET adjudication_run_id = ? WHERE task_id = ? AND source_run_id = ? "
+                    "AND disposition IS NOT NULL AND adjudication_run_id IS NULL",
+                    (run_id, task_id, source["id"]),
+                )
+            stop_reason = None
+            if after in {TaskState.NEEDS_INPUT, TaskState.FAILED}:
+                stop_reason = str(payload.get("question") or summary)
+            connection.execute(
+                "UPDATE tasks SET state = ?, pending_codex_purpose = NULL, last_codex_handoff = ?, "
+                "stop_reason = ?, revision_cycle = revision_cycle + ?, updated_at = ? WHERE id = ?",
+                (after, payload.get("report_markdown") or summary, stop_reason, revision_increment, now, task_id),
+            )
+            connection.execute(
+                "UPDATE human_inputs SET status = 'RESOLVED', resolution_run_id = ?, resolved_at = ? WHERE id = ?",
+                (run_id, now, human_input["id"]),
+            )
+            self.database.event(
+                connection, task_id, "INPUT_RESOLUTION_RECORDED", before, after,
+                {"human_input_id": human_input["id"], "decision": decision, "summary": summary}, run_id,
+            )
+        return self.status(task_id)
+
     def recover_interrupted(self, task_id: str, reason: str) -> dict[str, Any]:
         try:
             repository_after = json.dumps(git_snapshot(self.task(task_id)["repository_path"]).to_dict(), sort_keys=True)
@@ -346,25 +663,115 @@ class Runtime:
             )
             connection.execute(
                 "UPDATE tasks SET state = ?, stop_reason = ?, updated_at = ? WHERE id = ?",
-                (TaskState.BLOCKED, reason, now, task_id),
+                (TaskState.NEEDS_INPUT, reason, now, task_id),
             )
             self.database.event(
-                connection, task_id, "INTERRUPTED_RUN_BLOCKED", task["state"], TaskState.BLOCKED,
+                connection, task_id, "INTERRUPTED_RUN_BLOCKED", task["state"], TaskState.NEEDS_INPUT,
                 {"reason": reason}, run["id"],
             )
+        return self.status(task_id)
+
+    def recover_invalid_output(
+        self, task_id: str, *, model: str | None = None, minimum_model: str | None = None,
+        pin_model: bool = False, adapter_config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        task = self.task(task_id)
+        if TaskState(task["state"]) != TaskState.BLOCKED:
+            raise WorkflowError("invalid-output recovery requires a BLOCKED task")
+        failed = self.database.one(
+            "SELECT * FROM runs WHERE task_id = ? AND status IN ('INVALID_OUTPUT', 'FAILED') "
+            "ORDER BY sequence_number DESC LIMIT 1", (task_id,),
+        )
+        if not failed:
+            raise WorkflowError("task has no failed structured-output run")
+        error = json.loads(failed["error_json"] or "{}")
+        message = str(error.get("message", ""))
+        legacy_invalid = message.startswith("invalid finding ") or "dispositions are only allowed" in message
+        invalid = failed["status"] == "INVALID_OUTPUT" or legacy_invalid
+        if not invalid:
+            raise WorkflowError("latest failure is not eligible for structured-output recovery")
+        recovery_started = self.database.one(
+            "SELECT id FROM events WHERE task_id = ? AND event_type = 'INVALID_OUTPUT_RECOVERY_STARTED' LIMIT 1",
+            (task_id,),
+        )
+        prior_invalid = self.database.one(
+            "SELECT id FROM runs WHERE task_id = ? AND context_id = ? AND workflow_purpose = ? "
+            "AND status = 'INVALID_OUTPUT' AND sequence_number < ? LIMIT 1",
+            (task_id, failed["context_id"], failed["workflow_purpose"], failed["sequence_number"]),
+        )
+        if recovery_started or (failed["status"] == "FAILED" and prior_invalid):
+            raise WorkflowError("the single structured-output repair has already been consumed")
+        event = self.database.one(
+            "SELECT state_before FROM events WHERE task_id = ? AND run_id = ? "
+            "AND event_type IN ('RUN_FAILED', 'RUN_INVALID_OUTPUT') ORDER BY id DESC LIMIT 1",
+            (task_id, failed["id"]),
+        )
+        if not event or not event["state_before"]:
+            raise WorkflowError("failed run does not record its prior workflow state")
+        config = json.loads(task["adapter_config_json"] or "{}")
+        requested = dict(adapter_config or {})
+        if model is not None:
+            requested["model"] = model
+        if minimum_model is not None:
+            requested["minimum_model"] = minimum_model
+        if pin_model:
+            requested["pin_model"] = True
+        if any(key in requested for key in ("model", "minimum_model", "pin_model", "effort")):
+            config.pop("roles", None)
+        configured_roles = dict(config.get("roles", {}))
+        for role, values in requested.get("roles", {}).items():
+            configured_roles[role] = {**configured_roles.get(role, {}), **values}
+        config.update({key: value for key, value in requested.items() if key != "roles"})
+        if configured_roles:
+            config["roles"] = configured_roles
+        policy = load_policy(task["repository_path"], config)
+        config = policy.to_dict() | {
+            key: value for key, value in config.items()
+            if key in {"executable", "timeout", "enforce_model", "skill_root"}
+        }
+        with self.database.transaction(immediate=True) as connection:
+            connection.execute(
+                "UPDATE tasks SET state = ?, stop_reason = NULL, adapter_config_json = ?, updated_at = ? WHERE id = ?",
+                (event["state_before"], json.dumps(config, sort_keys=True), utc_now(), task_id),
+            )
+            self.database.event(
+                connection, task_id, "INVALID_OUTPUT_RECOVERY_STARTED", TaskState.BLOCKED, event["state_before"],
+                {"failed_run_id": failed["id"], "model_profiles": policy.to_dict()["roles"]},
+            )
+        action = replace(self.next_action(task_id), fresh=False)
+        adapter = self._adapter(self.task(task_id))
+        if not isinstance(adapter, ClaudeAdapter):
+            raise WorkflowError("invalid-output recovery requires the Claude adapter")
+        run_id = self._begin_run(self.task(task_id), action)
+        current_snapshot = git_snapshot(task["repository_path"])
+        original_error = StructuredOutputError(
+            message or "invalid structured protocol output", raw_output=failed["raw_output"] or "",
+            stderr="", payload=json.loads(failed["normalized_result_json"] or "{}"),
+            usage=json.loads(failed["usage_json"] or "{}"), before=current_snapshot, after=current_snapshot,
+        )
+        try:
+            run = adapter.run(action, Path(task["repository_path"]), repair=True, repair_error=original_error)
+            self._complete_run(task_id, run_id, action, run)
+        except Exception as recovery_error:
+            self._fail_run(task_id, run_id, recovery_error)
+            raise
         return self.status(task_id)
 
     def _adapter(self, task: dict[str, Any]) -> HarnessAdapter:
         config = json.loads(task["adapter_config_json"] or "{}")
         if task["adapter_name"] == "fake":
             return FakeAdapter(config.get("scenario", []))
+        policy = load_policy(task["repository_path"], config)
         return ClaudeAdapter(
-            executable=config.get("executable", "claude"),
-            timeout=int(config.get("timeout", 1800)),
-            model=config.get("model"),
+            executable=config.get("executable", "claude"), timeout=float(config.get("timeout", 1800)),
+            policy=policy, enforce_model=config.get("enforce_model"),
+            skill_root=Path(config["skill_root"]) if config.get("skill_root") else None,
         )
 
-    def _begin_run(self, task: dict[str, Any], action: NextAction) -> str:
+    def _begin_run(
+        self, task: dict[str, Any], action: NextAction, *, repair_of_run_id: str | None = None,
+        repair_prompt_version: int | None = None,
+    ) -> str:
         expected = self.next_action(task["id"])
         repository_before = git_snapshot(task["repository_path"])
         with self.database.transaction(immediate=True) as connection:
@@ -379,11 +786,12 @@ class Runtime:
             try:
                 connection.execute(
                     "INSERT INTO runs(id, task_id, context_id, protocol, workflow_purpose, sequence_number, status, "
-                    "started_at, repository_before_json) VALUES (?, ?, ?, ?, ?, ?, 'RUNNING', ?, ?)",
+                    "started_at, repository_before_json, repair_of_run_id, repair_prompt_version) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 'RUNNING', ?, ?, ?, ?)",
                     (
                         run_id, task["id"], context["id"], action.protocol, action.purpose,
                         self._next_sequence(connection, task["id"]), utc_now(),
-                        json.dumps(repository_before.to_dict(), sort_keys=True),
+                        json.dumps(repository_before.to_dict(), sort_keys=True), repair_of_run_id, repair_prompt_version,
                     ),
                 )
             except sqlite3.IntegrityError as error:
@@ -405,7 +813,10 @@ class Runtime:
                 ),
             )
             context = connection.execute("SELECT id FROM contexts WHERE session_id = ?", (action.context_id,)).fetchone()
-            connection.execute("UPDATE contexts SET is_fresh = 0 WHERE id = ?", (context["id"],))
+            connection.execute(
+                "UPDATE contexts SET is_fresh = 0, model_label = COALESCE(NULLIF(?, ''), model_label) WHERE id = ?",
+                (run.usage.get("observed_model"), context["id"]),
+            )
             self._store_findings(connection, task_id, run_id, run.result)
             self._transition(connection, task, action, run_id, run.result)
         completed = self.task(task_id)
@@ -418,27 +829,101 @@ class Runtime:
 
                 render_report(self.database, task_id, persist=True)
 
+    def _invalid_run(
+        self, task_id: str, run_id: str, error: StructuredOutputError, *, final: bool = False,
+        source_run_id: str | None = None,
+    ) -> None:
+        with self.database.transaction(immediate=True) as connection:
+            task = self._task(connection, task_id)
+            now = utc_now()
+            connection.execute(
+                "UPDATE runs SET status = 'INVALID_OUTPUT', finished_at = ?, raw_output = ?, "
+                "normalized_result_json = ?, error_json = ?, repository_before_json = ?, "
+                "repository_after_json = ?, usage_json = ?, validation_diagnostics_json = ?, "
+                "repair_of_run_id = COALESCE(repair_of_run_id, ?), repair_prompt_version = COALESCE(repair_prompt_version, ?) "
+                "WHERE id = ? AND status = 'RUNNING'",
+                (
+                    now, error.raw_output, json.dumps(error.payload, sort_keys=True),
+                    json.dumps({"type": type(error).__name__, "message": str(error)}),
+                    json.dumps(error.before.to_dict(), sort_keys=True), json.dumps(error.after.to_dict(), sort_keys=True),
+                    json.dumps(error.usage, sort_keys=True),
+                    json.dumps({"type": type(error).__name__, "message": str(error)}, sort_keys=True),
+                    source_run_id, 1 if source_run_id else None, run_id,
+                ),
+            )
+            if error.usage.get("observed_model"):
+                connection.execute(
+                    "UPDATE contexts SET model_label = ? WHERE id = (SELECT context_id FROM runs WHERE id = ?)",
+                    (error.usage["observed_model"], run_id),
+                )
+            after = TaskState.NEEDS_INPUT if final else task["state"]
+            if final:
+                connection.execute(
+                    "UPDATE tasks SET state = ?, stop_reason = ?, updated_at = ? WHERE id = ?",
+                    (after, "Structured protocol output remained invalid after one repair; planner input is required.",
+                     now, task_id),
+                )
+            self.database.event(
+                connection, task_id, "RUN_INVALID_OUTPUT", task["state"], after,
+                {"message": str(error), "repair_attempt": 2 if final else 1,
+                 "source_run_id": source_run_id}, run_id,
+            )
+
     def _fail_run(self, task_id: str, run_id: str, error: Exception) -> None:
         task_snapshot = self.task(task_id)
         try:
             repository_after = json.dumps(git_snapshot(task_snapshot["repository_path"]).to_dict(), sort_keys=True)
         except Exception as snapshot_error:
             repository_after = json.dumps({"snapshot_error": str(snapshot_error)}, sort_keys=True)
+        error_after = getattr(error, "after", None)
+        error_before = getattr(error, "before", None)
+        error_payload = getattr(error, "payload", None)
+        error_usage = getattr(error, "usage", None)
         with self.database.transaction(immediate=True) as connection:
             task = self._task(connection, task_id)
             now = utc_now()
             connection.execute(
-                "UPDATE runs SET status = 'FAILED', finished_at = ?, error_json = ?, repository_after_json = ? WHERE id = ?",
-                (now, json.dumps({"type": type(error).__name__, "message": str(error)}), repository_after, run_id),
+                "UPDATE runs SET status = 'FAILED', finished_at = ?, error_json = ?, repository_after_json = ?, "
+                "raw_output = COALESCE(?, raw_output), normalized_result_json = COALESCE(?, normalized_result_json), "
+                "repository_before_json = COALESCE(?, repository_before_json), usage_json = COALESCE(?, usage_json) "
+                "WHERE id = ?",
+                (
+                    now, json.dumps({"type": type(error).__name__, "message": str(error)}),
+                    json.dumps(error_after.to_dict(), sort_keys=True)
+                    if hasattr(error_after, "to_dict") else repository_after,
+                    getattr(error, "raw_output", None),
+                    json.dumps(error_payload, sort_keys=True) if error_payload is not None else None,
+                    json.dumps(error_before.to_dict(), sort_keys=True) if hasattr(error_before, "to_dict") else None,
+                    json.dumps(error_usage, sort_keys=True) if error_usage is not None else None,
+                    run_id,
+                ),
             )
+            if isinstance(error_usage, dict) and error_usage.get("observed_model"):
+                connection.execute(
+                    "UPDATE contexts SET model_label = ? WHERE id = (SELECT context_id FROM runs WHERE id = ?)",
+                    (error_usage["observed_model"], run_id),
+                )
+            integrity_failure = "changed the repository worktree" in str(error) or isinstance(error, WorkflowError)
+            failure_state = TaskState.FAILED if integrity_failure else TaskState.NEEDS_INPUT
             connection.execute(
                 "UPDATE tasks SET state = ?, stop_reason = ?, updated_at = ? WHERE id = ?",
-                (TaskState.BLOCKED, str(error), now, task_id),
+                (failure_state, str(error), now, task_id),
             )
             self.database.event(
-                connection, task_id, "RUN_FAILED", task["state"], TaskState.BLOCKED,
+                connection, task_id, "RUN_FAILED", task["state"], failure_state,
                 {"type": type(error).__name__, "message": str(error)}, run_id,
             )
+
+    @staticmethod
+    def _stored_structured_error(task: dict[str, Any], run: dict[str, Any]) -> StructuredOutputError:
+        current = git_snapshot(task["repository_path"])
+        diagnostic = json.loads(run["validation_diagnostics_json"] or run["error_json"] or "{}")
+        return StructuredOutputError(
+            str(diagnostic.get("message", "invalid structured protocol output")),
+            raw_output=run["raw_output"] or "", stderr="",
+            payload=json.loads(run["normalized_result_json"] or "{}"),
+            usage=json.loads(run["usage_json"] or "{}"), before=current, after=current,
+        )
 
     def _transition(
         self,
@@ -467,7 +952,7 @@ class Runtime:
                     )
                 after = TaskState.READY_FOR_CHALLENGE
             else:
-                after = TaskState.BLOCKED
+                after = TaskState.NEEDS_INPUT
                 updates["stop_reason"] = result.summary or status
         elif action.purpose == Purpose.CHALLENGE:
             if status == "APPROVE":
@@ -479,12 +964,12 @@ class Runtime:
             elif status == "REQUEST_CHANGES":
                 after = TaskState.READY_FOR_CHALLENGE_ADJUDICATION
             else:
-                after = TaskState.BLOCKED
+                after = TaskState.NEEDS_INPUT
                 updates["stop_reason"] = result.summary or status
         elif action.purpose == Purpose.CHALLENGE_ADJUDICATION:
             accepted = self._apply_dispositions(connection, task["id"], run_id, result)
             if status == ReviewStatus.BLOCKED or any(item.get("disposition") == Disposition.BLOCKED for item in result.dispositions):
-                after = TaskState.BLOCKED
+                after = TaskState.NEEDS_INPUT
                 updates["stop_reason"] = result.summary or "challenge adjudication blocked"
             elif accepted:
                 after = TaskState.WAITING_FOR_CHALLENGE_REVISION
@@ -503,7 +988,7 @@ class Runtime:
                     (task["id"], task["active_challenger_context_id"], Purpose.CHALLENGE_VERIFICATION),
                 ).fetchone()[0]
                 if attempts >= MAX_CHALLENGE_VERIFICATION_FAILURES:
-                    after = TaskState.BLOCKED
+                    after = TaskState.NEEDS_INPUT
                     updates["stop_reason"] = (
                         f"challenge verification requested changes {attempts} times; paused for human review"
                     )
@@ -519,7 +1004,7 @@ class Runtime:
                 )
                 updates.update(policy_updates)
             else:
-                after = TaskState.BLOCKED
+                after = TaskState.NEEDS_INPUT
                 updates["stop_reason"] = result.summary or status
         elif action.purpose == Purpose.FINAL_SUMMARY:
             if status == CompletionStatus.COMPLETED:
@@ -530,7 +1015,7 @@ class Runtime:
                     "completed_at": utc_now(),
                 })
             else:
-                after = TaskState.BLOCKED
+                after = TaskState.NEEDS_INPUT
                 updates["stop_reason"] = result.summary or status
         else:
             raise WorkflowError(f"unsupported transition purpose: {action.purpose}")

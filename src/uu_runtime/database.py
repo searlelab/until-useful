@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def utc_now() -> str:
@@ -46,6 +46,13 @@ class Database:
             if version == 0:
                 connection.executescript(SCHEMA)
                 connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                connection.commit()
+            elif version == 1:
+                connection.executescript(MIGRATION_1_TO_2)
+                connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                connection.commit()
+            if version <= SCHEMA_VERSION:
+                connection.executescript(V2_BACKFILL)
                 connection.commit()
         finally:
             connection.close()
@@ -148,7 +155,7 @@ CREATE TABLE contexts (
 );
 
 CREATE UNIQUE INDEX one_active_task_per_repository ON tasks(repository_path)
-WHERE state NOT IN ('WAITING_FOR_HUMAN_REVIEW', 'BLOCKED', 'STOPPED');
+WHERE state NOT IN ('WAITING_FOR_HUMAN_REVIEW', 'NEEDS_INPUT', 'FAILED', 'BLOCKED', 'STOPPED');
 
 CREATE TABLE runs (
     id TEXT PRIMARY KEY,
@@ -167,6 +174,9 @@ CREATE TABLE runs (
     repository_before_json TEXT,
     repository_after_json TEXT,
     usage_json TEXT,
+    validation_diagnostics_json TEXT,
+    repair_of_run_id TEXT REFERENCES runs(id),
+    repair_prompt_version INTEGER,
     UNIQUE(task_id, sequence_number)
 );
 
@@ -222,4 +232,79 @@ CREATE TABLE reports (
     source_run_id TEXT REFERENCES runs(id),
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE human_inputs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    source_run_id TEXT REFERENCES runs(id),
+    guidance TEXT NOT NULL,
+    prior_state TEXT,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    resolution_run_id TEXT REFERENCES runs(id),
+    created_at TEXT NOT NULL,
+    resolved_at TEXT
+);
+"""
+
+
+MIGRATION_1_TO_2 = """
+ALTER TABLE runs ADD COLUMN validation_diagnostics_json TEXT;
+ALTER TABLE runs ADD COLUMN repair_of_run_id TEXT REFERENCES runs(id);
+ALTER TABLE runs ADD COLUMN repair_prompt_version INTEGER;
+
+CREATE TABLE human_inputs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    source_run_id TEXT REFERENCES runs(id),
+    guidance TEXT NOT NULL,
+    prior_state TEXT,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    resolution_run_id TEXT REFERENCES runs(id),
+    created_at TEXT NOT NULL,
+    resolved_at TEXT
+);
+
+DROP INDEX one_active_task_per_repository;
+CREATE UNIQUE INDEX one_active_task_per_repository ON tasks(repository_path)
+WHERE state NOT IN ('WAITING_FOR_HUMAN_REVIEW', 'NEEDS_INPUT', 'FAILED', 'BLOCKED', 'STOPPED');
+
+UPDATE runs
+SET status = 'INVALID_OUTPUT',
+    validation_diagnostics_json = error_json,
+    repair_prompt_version = CASE WHEN sequence_number > 1 THEN 1 ELSE repair_prompt_version END
+WHERE status = 'FAILED'
+  AND (json_extract(error_json, '$.type') = 'StructuredOutputError'
+       OR json_extract(error_json, '$.message') LIKE 'invalid finding %'
+       OR json_extract(error_json, '$.message') LIKE '%dispositions are only allowed%'
+       OR json_extract(error_json, '$.message') LIKE '%requires only P3 findings%');
+
+UPDATE runs
+SET validation_diagnostics_json = COALESCE(validation_diagnostics_json, error_json)
+WHERE status = 'INVALID_OUTPUT';
+
+UPDATE tasks
+SET state = 'NEEDS_INPUT', updated_at = CURRENT_TIMESTAMP
+WHERE state = 'BLOCKED'
+  AND EXISTS (SELECT 1 FROM runs WHERE runs.task_id = tasks.id AND runs.status = 'INVALID_OUTPUT');
+"""
+
+
+V2_BACKFILL = """
+UPDATE runs AS repair
+SET repair_of_run_id = (
+    SELECT json_extract(event.details_json, '$.failed_run_id')
+    FROM events AS event
+    WHERE event.task_id = repair.task_id
+      AND event.event_type = 'INVALID_OUTPUT_RECOVERY_STARTED'
+      AND json_extract(event.details_json, '$.failed_run_id') IS NOT NULL
+    ORDER BY event.id DESC LIMIT 1
+)
+WHERE repair.repair_of_run_id IS NULL
+  AND repair.repair_prompt_version = 1
+  AND EXISTS (
+    SELECT 1 FROM events AS event
+    WHERE event.task_id = repair.task_id
+      AND event.event_type = 'INVALID_OUTPUT_RECOVERY_STARTED'
+      AND json_extract(event.details_json, '$.failed_run_id') IS NOT NULL
+  );
 """

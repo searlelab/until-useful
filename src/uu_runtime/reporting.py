@@ -4,6 +4,7 @@ import json
 
 from .database import Database, utc_now
 from .git_state import snapshot
+from .models import pipeline_outcome
 
 
 def render_report(database: Database, task_id: str, *, persist: bool = False) -> str:
@@ -23,7 +24,16 @@ def render_report(database: Database, task_id: str, *, persist: bool = False) ->
         "adjudication_run_id, verification_run_id FROM findings WHERE task_id = ? ORDER BY created_at, id",
         (task_id,),
     )
+    human_inputs = database.all(
+        "SELECT guidance, status, source_run_id, created_at, resolved_at FROM human_inputs "
+        "WHERE task_id = ? ORDER BY id", (task_id,),
+    )
     runs_by_id = {run["id"]: run for run in runs}
+    summary_runs = [
+        run for run in runs
+        if run["protocol"] == "UU_SUMMARIZE" and run["workflow_purpose"] == "FINAL_SUMMARY"
+    ]
+    latest_summary = summary_runs[-1] if summary_runs else None
     events = database.all(
         "SELECT event_type, state_before, state_after, details_json, created_at FROM events "
         "WHERE task_id = ? ORDER BY id", (task_id,),
@@ -42,9 +52,11 @@ def render_report(database: Database, task_id: str, *, persist: bool = False) ->
         f"- Repository: `{task['repository_path']}`",
         f"- Canonical plan: `{task['canonical_plan_path']}`",
         f"- Risk profile: `{task['risk_profile']}`",
+        f"- Model policy: `{json.dumps(json.loads(task['adapter_config_json'] or '{}'), sort_keys=True)}`",
         "",
         "## Final status",
         "",
+        f"- Pipeline outcome: `{pipeline_outcome(task['state'])}`",
         f"- State: `{task['state']}`",
         f"- Suggested commit title: `{task['final_title'] or 'not available'}`",
         f"- Stop reason: {task['stop_reason'] or 'workflow still active'}",
@@ -80,7 +92,7 @@ def render_report(database: Database, task_id: str, *, persist: bool = False) ->
         "## Implementation summary",
         "",
     ])
-    codex_runs = [run for run in runs if run["protocol"] == "UU_REVISE"]
+    codex_runs = [run for run in runs if run["protocol"] in {"UU_PLAN", "UU_REVISE"}]
     if codex_runs:
         for run in codex_runs:
             lines.append(f"- {run['cleaned_report'] or 'Codex revision completed without a cleaned report.'}")
@@ -98,6 +110,28 @@ def render_report(database: Database, task_id: str, *, persist: bool = False) ->
             f"- #{run['sequence_number']} `{run['workflow_purpose']}` in `{run['lineage_label'] or 'unknown'}`: "
             f"{run['status']} / {normalized.get('status', 'no normalized status')}"
         )
+        usage = json.loads(run["usage_json"] or "{}")
+        if usage.get("requested_model") or usage.get("observed_model"):
+            selection = "deliberate pin" if usage.get("pin_model") else "moving alias"
+            lines.append(
+                f"  - Model profile `{usage.get('requested_role', 'legacy')}`: requested "
+                f"`{usage.get('requested_model', 'unknown')}` ({selection}), effort "
+                f"`{usage.get('requested_effort') or 'default'}`, observed "
+                f"`{usage.get('observed_model', 'unreported')}`, provider `{usage.get('provider', 'unknown')}`, "
+                f"Claude Code `{usage.get('claude_version', 'unknown')}`"
+            )
+        if run["status"] == "INVALID_OUTPUT":
+            diagnostic = json.loads(run["validation_diagnostics_json"] or run["error_json"] or "{}")
+            lines.append("  - Claude call completed: yes; protocol validation passed: no")
+            lines.append(f"  - Validation diagnostic: {diagnostic.get('message', json.dumps(diagnostic, sort_keys=True))}")
+            invalid_findings = normalized.get("findings", [])
+            for finding in invalid_findings:
+                lines.append(
+                    f"  - Preserved invalid-result finding: `{finding.get('id', '?')}` "
+                    f"{finding.get('priority', '?')} — {finding.get('title', 'untitled')}"
+                )
+        elif run["status"] == "COMPLETED":
+            lines.append("  - Claude call completed: yes; protocol validation passed: yes")
         for check in checks:
             lines.append(f"  - Check: {json.dumps(check, sort_keys=True)}")
 
@@ -129,6 +163,18 @@ def render_report(database: Database, task_id: str, *, persist: bool = False) ->
                 lines.append(f"  - Evidence: {finding['disposition_evidence']}")
     else:
         lines.append("- No findings recorded.")
+
+    lines.extend(["", "## Human input", ""])
+    if human_inputs:
+        for item in human_inputs:
+            lines.append(
+                f"- `{item['status']}` input at {item['created_at']}: {item['guidance']} "
+                f"(source run `{item['source_run_id'] or 'none'}`)"
+            )
+    elif str(pipeline_outcome(task["state"])) == "NEEDS_INPUT":
+        lines.append(f"- Required action: provide focused guidance with `$uu-input {task_id} <guidance>`." )
+    else:
+        lines.append("- No human input was requested.")
 
     refreshes = [event for event in events if event["event_type"] == "CONTEXT_REFRESHED"]
     lines.extend(["", "## Context refreshes", ""])
@@ -167,6 +213,14 @@ def render_report(database: Database, task_id: str, *, persist: bool = False) ->
         "",
         "The Until Useful Runtime did not stage, commit, merge, rebase, or push changes.",
     ])
+    lines.extend(["", "## UU Summary result", ""])
+    if latest_summary:
+        summary = json.loads(latest_summary["normalized_result_json"] or "{}")
+        title = summary.get("title") or task["final_title"] or "not available"
+        lines.append(f"- Status: `{summary.get('status', latest_summary['status'])}`")
+        lines.append(f"- Title: `{title}`")
+    else:
+        lines.append("- No `UU_SUMMARIZE` result was recorded.")
     report = "\n".join(lines) + "\n"
     if persist:
         with database.transaction(immediate=True) as connection:

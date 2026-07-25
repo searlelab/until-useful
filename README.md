@@ -9,7 +9,7 @@ Until Useful is a portable six-skill manual workflow for open coding-agent sessi
 5. `uu-summarize`: return one concise commit title for the current changeset
 6. `uu-second-opinion`: independently audit an approved changeset from a fresh session
 
-An optional seventh Codex-only skill, `uu-build`, keeps planning and revisions in the active Codex task while a local runtime invokes persistent or fresh Claude Code contexts for review, adversarial challenge, adjudication, verification, and final summarization.
+Two optional Codex-only skills, `uu-build` and `uu-input`, run the scripted pipeline and resolve its human-input gates while a local runtime invokes persistent or fresh Claude Code contexts.
 
 ## Interactive-session design
 <img align="right" src="docs/uu_loop.png" width=500 style="margin-left: 15px;">
@@ -33,6 +33,7 @@ Use `uu-second-opinion` once, after `uu-review` approves, as a bounded pre-merge
 | Summarize | `/uu-summarize` | `$uu-summarize` | `/uu-summarize` |
 | Second opinion | `/uu-second-opinion` | `$uu-second-opinion` | `/uu-second-opinion` |
 | Automated build (V1) | Not supported | `$uu-build proposal` | Not supported |
+| Automated input resolution | Not supported | `$uu-input task-id guidance` | Not supported |
 
 Large summaries, reviews, proposals, and notes can be pasted as multiline text after the invocation.
 
@@ -43,12 +44,52 @@ V1 is deliberately asymmetric: the current Codex task is the constructive `P1` c
 ```sh
 python3 -m pip install .
 ./install.sh --claude --codex
-uu-runtime doctor
+claude update
+uu-runtime doctor --live --timeout 30
 ```
 
-Invoke `$uu-build proposal` in Codex for the normal workflow. Runtime state and reports are stored outside Git by default in `~/.local/state/until-useful/runtime.sqlite3`; override that location with `--database` or `UU_RUNTIME_DB`.
+`uu-build` requires Claude Code 2.1.219 or newer. Automated review and verification use the moving `sonnet` alias at medium effort with a Sonnet 5 floor; fresh second opinions use `opus` at medium effort with an Opus 5 floor; final title generation uses `haiku` with its maintained floor and no effort override. The live doctor probes every profile and verifies the observed concrete models from `modelUsage`. There is no fallback. Full `claude-*` IDs require explicit pins.
 
-The CLI also supports recovery and inspection through `start`, `next`, `record-codex-result`, `status`, `resume`, `report`, `contexts`, `refresh-context`, `recover-interrupted`, `stop`, and `doctor`. Commands emit JSON for orchestration except the default Markdown report.
+Invoke `$uu-build proposal` in Codex for the normal workflow. Runtime state and reports are stored outside Git by default in `~/.local/state/until-useful/runtime.sqlite3`; override that location with `--database` or `UU_RUNTIME_DB`. A new build registers its approved plan before implementation, so the task ID can resume an interrupted initial draft.
+
+### Permissions and recovery
+
+Normal Codex workspace sandboxing is sufficient. When Codex requests approval for runtime state-file access or the Claude network subprocess, prefer a reusable approval limited to the `uu-runtime` executable. Do not enable global full access, Claude `bypassPermissions`, or `--dangerously-skip-permissions`. Project tests, local servers, browsers, and other application-specific tools need their own narrowly scoped approvals. If no approval dialog appears, the active host policy may already permit the command; that does not remove the permission boundary.
+
+Claude reviewers receive read/search tools and narrow Git inspection by default, never edit/write tools or unrestricted Bash. A repository may add exact test-command prefixes in `.until-useful.toml`:
+
+```toml
+[claude]
+allowed_commands = [
+  "git status",
+  "git diff",
+  "git log",
+  "git show",
+  "python -B -m unittest",
+]
+
+[claude.roles.review]
+model = "sonnet"
+minimum_model = "claude-sonnet-5"
+effort = "medium"
+
+[claude.roles.second_opinion]
+model = "opus"
+minimum_model = "claude-opus-5"
+effort = "medium"
+
+[claude.roles.summarize]
+model = "haiku"
+minimum_model = "claude-haiku-4-5"
+```
+
+Command rules reject shell operators, substitutions, environment assignments, path-qualified executables, nested shells, and write-capable Git subcommands. Browser and server commands intentionally remain outside this profile.
+
+Resume a task with `uu-runtime resume --task <id>`. Reports expose a stable pipeline outcome (`IN_PROGRESS`, `APPROVE`, `NEEDS_INPUT`, `FAILED`, or `STOPPED`) separately from detailed state. If a completed Claude result fails protocol validation, the runtime retains it and makes one informed, tool-free correction using the originating role's profile. A second invalid result becomes `NEEDS_INPUT`. In the original P1 Codex task, invoke `$uu-input <task-id> <guidance>` to revise, retry a resolved prerequisite, approve with evidence-backed dispositions, ask a narrower question, or record an explicit failure.
+
+For Claude-side auditing, use `uu-runtime contexts --task <id>` to find the session UUID and inspect the matching JSONL under `~/.claude/projects/`. Reports record the requested model, observed concrete model, Claude Code version, and effective policy without storing private reasoning.
+
+The CLI also supports recovery and inspection through `register-plan`, `start`, `next`, `record-codex-result`, `provide-input`, `record-input-resolution`, `status`, `resume`, `report`, `contexts`, `refresh-context`, `recover-invalid-output`, `recover-interrupted`, `stop`, and `doctor`. Commands emit JSON for orchestration except the default Markdown report.
 
 ### Runtime design intent
 
@@ -74,7 +115,7 @@ Install only selected agents:
 ./install.sh --qwen
 ```
 
-Existing same-named `uu-*` skill folders are refreshed on every installation; unrelated skills are not changed. `uu-build` is installed only for Codex in V1. Preserve existing `uu-*` skills explicitly:
+Existing same-named `uu-*` skill folders are refreshed on every installation; unrelated skills are not changed. `uu-build` and `uu-input` are installed only for Codex in V1. Preserve existing `uu-*` skills explicitly:
 
 ```sh
 ./install.sh --all --skip-existing

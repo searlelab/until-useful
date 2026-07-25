@@ -6,6 +6,7 @@ from typing import Any
 
 
 class Protocol(StrEnum):
+    UU_PLAN = "UU_PLAN"
     UU_REVIEW = "UU_REVIEW"
     UU_REVISE = "UU_REVISE"
     UU_SECOND_OPINION = "UU_SECOND_OPINION"
@@ -13,6 +14,7 @@ class Protocol(StrEnum):
 
 
 class Purpose(StrEnum):
+    INITIAL_IMPLEMENTATION = "INITIAL_IMPLEMENTATION"
     INITIAL_REVIEW = "INITIAL_REVIEW"
     REVISION_VERIFICATION = "REVISION_VERIFICATION"
     CHALLENGE = "CHALLENGE"
@@ -20,6 +22,7 @@ class Purpose(StrEnum):
     CHALLENGE_REVISION = "CHALLENGE_REVISION"
     CHALLENGE_VERIFICATION = "CHALLENGE_VERIFICATION"
     FINAL_SUMMARY = "FINAL_SUMMARY"
+    INPUT_RESOLUTION = "INPUT_RESOLUTION"
 
 
 class ContextClass(StrEnum):
@@ -29,6 +32,7 @@ class ContextClass(StrEnum):
 
 
 class TaskState(StrEnum):
+    WAITING_FOR_INITIAL_IMPLEMENTATION = "WAITING_FOR_INITIAL_IMPLEMENTATION"
     READY_FOR_INITIAL_REVIEW = "READY_FOR_INITIAL_REVIEW"
     WAITING_FOR_CODEX_REVISION = "WAITING_FOR_CODEX_REVISION"
     READY_FOR_REVISION_VERIFICATION = "READY_FOR_REVISION_VERIFICATION"
@@ -38,6 +42,9 @@ class TaskState(StrEnum):
     READY_FOR_CHALLENGE_VERIFICATION = "READY_FOR_CHALLENGE_VERIFICATION"
     READY_FOR_FINAL_SUMMARY = "READY_FOR_FINAL_SUMMARY"
     WAITING_FOR_HUMAN_REVIEW = "WAITING_FOR_HUMAN_REVIEW"
+    NEEDS_INPUT = "NEEDS_INPUT"
+    WAITING_FOR_CODEX_INPUT_RESOLUTION = "WAITING_FOR_CODEX_INPUT_RESOLUTION"
+    FAILED = "FAILED"
     BLOCKED = "BLOCKED"
     STOPPED = "STOPPED"
 
@@ -75,6 +82,35 @@ class ActionOwner(StrEnum):
     CODEX = "CODEX"
     HUMAN = "HUMAN"
     NONE = "NONE"
+
+
+class PipelineOutcome(StrEnum):
+    IN_PROGRESS = "IN_PROGRESS"
+    APPROVE = "APPROVE"
+    NEEDS_INPUT = "NEEDS_INPUT"
+    FAILED = "FAILED"
+    STOPPED = "STOPPED"
+
+
+class InputDecision(StrEnum):
+    REVISED = "REVISED"
+    RETRY = "RETRY"
+    APPROVE = "APPROVE"
+    NEEDS_INPUT = "NEEDS_INPUT"
+    FAILED = "FAILED"
+
+
+def pipeline_outcome(state: TaskState | str) -> PipelineOutcome:
+    state = TaskState(state)
+    if state == TaskState.WAITING_FOR_HUMAN_REVIEW:
+        return PipelineOutcome.APPROVE
+    if state in {TaskState.NEEDS_INPUT, TaskState.BLOCKED}:
+        return PipelineOutcome.NEEDS_INPUT
+    if state == TaskState.FAILED:
+        return PipelineOutcome.FAILED
+    if state == TaskState.STOPPED:
+        return PipelineOutcome.STOPPED
+    return PipelineOutcome.IN_PROGRESS
 
 
 @dataclass(frozen=True)
@@ -141,7 +177,8 @@ RISK_PROFILES: dict[str, tuple[int, int]] = {
 
 TERMINAL_STATES = {
     TaskState.WAITING_FOR_HUMAN_REVIEW,
+    TaskState.NEEDS_INPUT,
+    TaskState.FAILED,
     TaskState.BLOCKED,
     TaskState.STOPPED,
 }
-

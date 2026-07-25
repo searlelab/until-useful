@@ -83,8 +83,8 @@ install_to() {
   for skill_dir in "$SKILLS_DIR"/uu-*; do
     skill_name=$(basename "$skill_dir")
     case "$skill_name:$agent_name" in
-      uu-build:Codex*) ;;
-      uu-build:*)
+      uu-build:Codex*|uu-input:Codex*) ;;
+      uu-build:*|uu-input:*)
         echo "$agent_name: skipped $skill_name, Codex-only in V1"
         continue
         ;;

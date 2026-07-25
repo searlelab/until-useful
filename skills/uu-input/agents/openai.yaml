@@ -1,0 +1,4 @@
+interface:
+  display_name: "UU Input"
+  short_description: "Resolve scripted uu-build human-input gates"
+  default_prompt: "Use $uu-input to resolve the specified scripted uu-build task with the supplied human guidance."
