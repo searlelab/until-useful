@@ -36,5 +36,4 @@ Run the automated Until Useful V1 workflow from the current Codex task. This ski
 
 ## Failure handling
 
-Preserve raw runtime evidence and stop on malformed structured output, an unexpected state transition, Claude session failure, read-only worktree mutation, interrupted mutation, or a material plan change. Do not guess that an uncertain run succeeded or bypass a blocked state.
-
+Preserve raw runtime evidence and stop on malformed structured output, an unexpected state transition, Claude session failure, read-only worktree mutation, interrupted mutation, or a material plan change. If Codex reports or detects token-budget/context exhaustion, record one `BLOCKED` result with that reason and stop; do not retry in the same context. Claude timeout and context/token exhaustion are runtime blockers and must likewise be returned to the human without retry. Do not guess that an uncertain run succeeded or bypass a blocked state.

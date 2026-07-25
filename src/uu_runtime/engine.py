@@ -30,6 +30,9 @@ class WorkflowError(RuntimeError):
     pass
 
 
+MAX_CHALLENGE_VERIFICATION_FAILURES = 3
+
+
 def _uuid() -> str:
     return str(uuid.uuid4())
 
@@ -250,16 +253,20 @@ class Runtime:
                 next_state = TaskState.READY_FOR_CHALLENGE_VERIFICATION
             else:
                 raise WorkflowError(f"task is not waiting for Codex: {state}")
+            if task["pending_codex_purpose"] != purpose:
+                raise WorkflowError(
+                    f"pending Codex purpose mismatch: expected {task['pending_codex_purpose']!r}, got {purpose}"
+                )
             run_id = _uuid()
             sequence = self._next_sequence(connection, task_id)
             now = utc_now()
             connection.execute(
                 "INSERT INTO runs(id, task_id, context_id, protocol, workflow_purpose, sequence_number, status, "
                 "started_at, finished_at, raw_output, cleaned_report, normalized_result_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     run_id, task_id, task["constructive_context_id"], Protocol.UU_REVISE, purpose, sequence,
-                    now, now, json.dumps(payload, sort_keys=True), result.report_markdown or result.summary,
+                    result.status, now, now, json.dumps(payload, sort_keys=True), result.report_markdown or result.summary,
                     json.dumps(result.to_dict(), sort_keys=True),
                 ),
             )
@@ -490,12 +497,24 @@ class Runtime:
                 updates.update(policy_updates)
         elif action.purpose == Purpose.CHALLENGE_VERIFICATION:
             if status == ReviewStatus.REQUEST_CHANGES:
-                after = TaskState.WAITING_FOR_CHALLENGE_REVISION
-                updates["pending_codex_purpose"] = Purpose.CHALLENGE_REVISION
+                attempts = connection.execute(
+                    "SELECT COUNT(*) FROM runs WHERE task_id = ? AND context_id = ? "
+                    "AND workflow_purpose = ? AND normalized_result_json LIKE '%REQUEST_CHANGES%'",
+                    (task["id"], task["active_challenger_context_id"], Purpose.CHALLENGE_VERIFICATION),
+                ).fetchone()[0]
+                if attempts >= MAX_CHALLENGE_VERIFICATION_FAILURES:
+                    after = TaskState.BLOCKED
+                    updates["stop_reason"] = (
+                        f"challenge verification requested changes {attempts} times; paused for human review"
+                    )
+                else:
+                    after = TaskState.WAITING_FOR_CHALLENGE_REVISION
+                    updates["pending_codex_purpose"] = Purpose.CHALLENGE_REVISION
             elif status in {ReviewStatus.APPROVE, ReviewStatus.APPROVE_WITH_MINOR_ISSUES}:
+                material = self._has_material_accepted_findings(connection, task["id"])
                 self._mark_verified(connection, task["id"], run_id)
                 after, policy_updates = self._finish_challenge(
-                    connection, task, material=True, promote=True,
+                    connection, task, material=material, promote=True,
                     stopping_reason="verified material corrections reached the configured challenge maximum",
                 )
                 updates.update(policy_updates)
@@ -589,6 +608,14 @@ class Runtime:
     ) -> dict[str, Any]:
         context_id = _uuid()
         session_id = new_session_id()
+        duplicate = connection.execute(
+            "SELECT task_id, lineage_label FROM contexts WHERE adapter = 'claude' AND session_id = ?", (session_id,)
+        ).fetchone()
+        if duplicate:
+            raise WorkflowError(
+                f"refusing duplicate Claude session UUID already used by task {duplicate['task_id']} "
+                f"context {duplicate['lineage_label']}"
+            )
         connection.execute(
             "INSERT INTO contexts(id, task_id, lineage_label, context_class, adapter, harness, session_id, "
             "parent_context_id, created_at, is_fresh) VALUES (?, ?, ?, ?, 'claude', 'claude-code', ?, ?, ?, 1)",
@@ -696,6 +723,13 @@ class Runtime:
             "WHERE task_id = ? AND status IN ('ACCEPTED', 'OPEN')",
             (run_id, utc_now(), task_id),
         )
+
+    @staticmethod
+    def _has_material_accepted_findings(connection: sqlite3.Connection, task_id: str) -> bool:
+        return bool(connection.execute(
+            "SELECT 1 FROM findings WHERE task_id = ? AND status = 'ACCEPTED' AND priority IN ('P0', 'P1') LIMIT 1",
+            (task_id,),
+        ).fetchone())
 
     @staticmethod
     def _constructive_handoff(connection: sqlite3.Connection, task: dict[str, Any]) -> str:

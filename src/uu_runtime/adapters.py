@@ -24,6 +24,10 @@ class AdapterError(RuntimeError):
     pass
 
 
+class HarnessExhaustedError(AdapterError):
+    """The harness cannot continue without a fresh context or larger budget."""
+
+
 @dataclass(frozen=True)
 class AdapterRun:
     result: ProtocolResult
@@ -117,10 +121,22 @@ RESULT_SCHEMA: dict[str, Any] = {
 }
 
 
+def result_schema(protocol: Protocol) -> dict[str, Any]:
+    schema = json.loads(json.dumps(RESULT_SCHEMA))
+    if protocol == Protocol.UU_REVIEW:
+        statuses = [str(item) for item in ReviewStatus]
+    elif protocol == Protocol.UU_SECOND_OPINION:
+        statuses = [str(item) for item in ChallengeStatus]
+    else:
+        statuses = [str(item) for item in CompletionStatus]
+    schema["properties"]["status"] = {"type": "string", "enum": statuses}
+    return schema
+
+
 class ClaudeAdapter:
     name = "claude"
 
-    def __init__(self, *, executable: str = "claude", timeout: int = 1800, model: str | None = None):
+    def __init__(self, *, executable: str = "claude", timeout: float = 1800, model: str | None = None):
         self.executable = executable
         self.timeout = timeout
         self.model = model
@@ -145,7 +161,7 @@ class ClaudeAdapter:
             "--output-format",
             "json",
             "--json-schema",
-            json.dumps(RESULT_SCHEMA, separators=(",", ":")),
+            json.dumps(result_schema(action.protocol), separators=(",", ":")),
             "--permission-mode",
             "dontAsk",
             "--allowedTools",
@@ -174,12 +190,17 @@ class ClaudeAdapter:
                 check=False,
             )
         except subprocess.TimeoutExpired as error:
-            raise AdapterError(f"Claude timed out after {self.timeout}s") from error
+            raise HarnessExhaustedError(
+                f"Claude timed out after {self.timeout}s; workflow paused without retry"
+            ) from error
         after = snapshot(repository)
         if not same_worktree(before, after):
             raise AdapterError("read-only Claude protocol changed the repository worktree")
         if process.returncode != 0:
-            raise AdapterError(process.stderr.strip() or f"Claude exited with {process.returncode}")
+            message = process.stderr.strip() or process.stdout.strip() or f"Claude exited with {process.returncode}"
+            if self._looks_exhausted(message):
+                raise HarnessExhaustedError(f"Claude exhausted its context or token budget; workflow paused: {message}")
+            raise AdapterError(message)
 
         payload = self._extract_payload(process.stdout)
         result = ProtocolResult.from_dict(payload)
@@ -212,6 +233,14 @@ class ClaudeAdapter:
         raise AdapterError("Claude JSON output did not contain a structured protocol result")
 
     @staticmethod
+    def _looks_exhausted(message: str) -> bool:
+        lowered = message.lower()
+        return any(marker in lowered for marker in (
+            "context window", "context length", "token limit", "max tokens", "maximum tokens",
+            "out of tokens", "prompt is too long", "prompt too long", "budget exhausted", "usage limit reached",
+        ))
+
+    @staticmethod
     def _prompt(action: NextAction) -> str:
         plan = action.inputs["canonical_plan_path"]
         if action.purpose == Purpose.CHALLENGE:
@@ -219,12 +248,14 @@ class ClaudeAdapter:
                 "/uu-second-opinion\n\n"
                 f"Canonical plan: {plan}\n"
                 "Work only from the canonical plan and repository state. Do not use or request prior narratives. "
+                "Use the exact underscore-delimited status token required by the JSON schema. "
                 "Return the required structured result and place the normal skill report in report_markdown."
             )
         if action.purpose == Purpose.FINAL_SUMMARY:
             return (
                 "/uu-summarize\n\n"
                 f"Canonical plan: {plan}\n"
+                "Use the exact underscore-delimited status token required by the JSON schema. "
                 "Return the exact one-line title in title and the structured result."
             )
         handoff = action.inputs.get("handoff_report", "")
@@ -238,6 +269,7 @@ class ClaudeAdapter:
         return (
             "/uu-review\n\n"
             f"Canonical plan: {plan}\n{label}:\n{material}\n\n"
+            "Use the exact underscore-delimited status token required by the JSON schema. "
             "Return the normal skill report in report_markdown plus the required structured fields. "
             "During challenge adjudication, include a disposition for every challenge finding."
         )
