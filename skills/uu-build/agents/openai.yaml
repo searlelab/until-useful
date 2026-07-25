@@ -1,0 +1,6 @@
+interface:
+  display_name: "UU Build"
+  short_description: "Run Codex work through persistent Claude review contexts"
+policy:
+  allow_implicit_invocation: false
+
