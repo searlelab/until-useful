@@ -3,7 +3,7 @@
 Until Useful is a portable six-skill workflow for open coding-agent sessions:
 
 1. `uu-propose`: explore a user-supplied direction and recommend one problem to plan
-2. `uu-plan`: create and execute a repository-grounded plan from a pasted proposal
+2. `uu-plan`: create and execute a repository-grounded plan from a pasted proposal (ideally, run in `/plan` mode)
 3. `uu-review`: review another coding agent's work from its pasted summary
 4. `uu-revise`: adjudicate pasted review feedback and implement justified fixes
 5. `uu-summarize`: return one concise commit title for the current changeset
