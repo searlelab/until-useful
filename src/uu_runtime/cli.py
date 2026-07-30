@@ -138,6 +138,36 @@ def _model_payload(arguments: argparse.Namespace, payload: dict[str, Any]) -> di
     return {**payload, "adapter_config": config}
 
 
+def _claude_authentication_guidance() -> dict[str, str]:
+    return {
+        "frequency": (
+            "Usually authenticate once per local Claude Code user/configuration. "
+            "Authenticate again only after the login expires or is revoked, after logging out, "
+            "when changing accounts, or when the machine/configuration changes."
+        ),
+        "interactive_login": (
+            "Run `claude` in the same environment that runs uu-build, enter `/login`, and complete "
+            "the browser flow. If the browser does not open, press `c` to copy the login URL."
+        ),
+        "verify": (
+            "Inside Claude Code, run `/status` and confirm a logged-in account or the intended provider; "
+            "then exit Claude Code and run uu-build again."
+        ),
+        "same_environment": (
+            "The login belongs to the OS user and Claude configuration directory. SSH, containers, "
+            "a different shell user, or a different `CLAUDE_CONFIG_DIR` may need a separate login."
+        ),
+        "repair": (
+            "If login still reports false, run `/logout`, exit, restart `claude`, and run `/login` again; "
+            "on macOS, run `claude doctor` if Keychain access may be the problem."
+        ),
+        "automation": (
+            "For CI or other non-interactive environments, run `claude setup-token` and store the resulting "
+            "one-year token as the secret environment variable `CLAUDE_CODE_OAUTH_TOKEN`; never commit it."
+        ),
+    }
+
+
 def doctor(
     database_path: str, repository: str, *, live: bool = False, timeout: float = 30,
     model: str | None = None, minimum_model: str | None = None, pin_model: bool = False,
@@ -199,13 +229,21 @@ def doctor(
                     }
             except json.JSONDecodeError:
                 auth_detail = auth.stdout.strip() or auth.stderr.strip() or f"exit {auth.returncode}"
-            checks.append({
-                "name": "claude_authentication", "ok": auth.returncode == 0,
+            auth_ok = auth.returncode == 0 and not (
+                isinstance(auth_detail, dict) and auth_detail.get("loggedIn") is False
+            )
+            auth_check = {
+                "name": "claude_authentication", "ok": auth_ok,
                 "detail": auth_detail,
-            })
-            auth_ok = auth.returncode == 0
+            }
+            if not auth_ok:
+                auth_check["guidance"] = _claude_authentication_guidance()
+            checks.append(auth_check)
         except subprocess.TimeoutExpired:
-            checks.append({"name": "claude_authentication", "ok": False, "detail": "authentication_timeout"})
+            checks.append({
+                "name": "claude_authentication", "ok": False, "detail": "authentication_timeout",
+                "guidance": _claude_authentication_guidance(),
+            })
         probe_schema = {
             "type": "object", "properties": {"ready": {"const": True}},
             "required": ["ready"], "additionalProperties": False,

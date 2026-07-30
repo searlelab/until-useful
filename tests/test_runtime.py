@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from uu_runtime.adapters import AdapterError, AdapterRun, ClaudeAdapter, HarnessExhaustedError, result_schema, validate_result
 from uu_runtime.database import Database, utc_now
-from uu_runtime.cli import main as cli_main
+from uu_runtime.cli import doctor, main as cli_main
 from uu_runtime.engine import Runtime, WorkflowError
 from uu_runtime.git_state import same_worktree, snapshot
 from uu_runtime.models import ActionOwner, NextAction, Protocol, ProtocolResult, Purpose, TaskState, pipeline_outcome
@@ -501,6 +501,24 @@ class RuntimeTestCase(unittest.TestCase):
         )
         with self.assertRaisesRegex(AdapterError, r"claude update"):
             ClaudeAdapter(executable=str(executable), enforce_model=True).run(self.review_action(), self.repository)
+
+    def test_doctor_marks_logged_out_claude_as_unready_with_recovery_guidance(self) -> None:
+        def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+            if command[-1] == "--version":
+                return subprocess.CompletedProcess(command, 0, stdout="2.1.219\n", stderr="")
+            return subprocess.CompletedProcess(
+                command, 0, stdout=json.dumps({"loggedIn": False, "authMethod": "none"}), stderr="",
+            )
+
+        with patch("uu_runtime.cli.shutil.which", return_value="/usr/bin/claude"), \
+             patch("uu_runtime.cli.subprocess.run", side_effect=fake_run):
+            result = doctor(str(self.database.path), str(self.repository), live=True)
+
+        authentication = next(check for check in result["checks"] if check["name"] == "claude_authentication")
+        self.assertFalse(authentication["ok"])
+        self.assertFalse(authentication["detail"]["loggedIn"])
+        self.assertIn("interactive_login", authentication["guidance"])
+        self.assertIn("one-year token", authentication["guidance"]["automation"])
 
     def test_model_substitution_blocks_before_result_advances(self) -> None:
         executable = self.executable(
