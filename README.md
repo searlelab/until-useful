@@ -3,13 +3,13 @@
 Until Useful is a portable six-skill manual workflow for open coding-agent sessions:
 
 1. `uu-propose`: explore a user-supplied direction and recommend one problem to plan
-2. `uu-plan`: create and execute a repository-grounded plan from a pasted proposal
+2. `uu-plan`: create and execute a repository-grounded plan from a pasted proposal (ideally, run in `/plan` mode)
 3. `uu-review`: review another coding agent's work from its pasted summary
 4. `uu-revise`: adjudicate pasted review feedback and implement justified fixes
 5. `uu-summarize`: return one concise commit title for the current changeset
 6. `uu-second-opinion`: independently audit an approved changeset from a fresh session
 
-Two optional Codex-only skills, `uu-build` and `uu-input`, run the scripted pipeline and resolve its human-input gates while a local runtime invokes persistent or fresh Claude Code contexts.
+The skillset design is a workflow of single tasks that enforce a single source of memory and independent code review. A key idea is that no agent can unilaterally require changes or approve work without a second set of eyes. Ultimately, the human is responsible for the commit.
 
 ## Interactive-session design
 <img align="right" src="docs/uu_loop.png" width=500 style="margin-left: 15px;">
@@ -20,7 +20,9 @@ These skills are designed for one person progressing one problem at a time in on
 
 Select the model and reasoning level in the current session. Once settled, `uu-plan` writes its plan verbatim to `docs/uu-<task-slug>.md` before implementing it. That document carries durable task intent through the loop. After its initial creation, only the human may revise the canonical plan; the human must provide any updated plan to the next manual handoff. `uu-review` reads it but never writes repository files. `uu-revise` runs in a separate session with a corrective objective, not as a continuation of `uu-plan`'s private reasoning: it reconstructs context from the canonical plan, repository state and diff, pasted `uu-review` report, and relevant code and tests; it must not modify the plan file, while still being able to update other documentation when the approved work requires it. Pasted worker and reviewer reports carry the evolving implementation and review context.
 
-Use `uu-second-opinion` once, after `uu-review` approves, as a bounded pre-merge sanity check for material risks missed by the plan/review/revise loop. Start a fresh session and invoke it without arguments; give that auditor the canonical goal document and repository state, but not worker summaries, prior reviews, or revision narratives. If available, select a different model family. A clean audit approves the changeset rather than listing nits. If it reports a substantiated P0/P1 issue, paste the report into the original-context `uu-review` session, which adjudicates it and produces the only review output that may be handed to `uu-revise`. After accepted material fixes, run at most one final second opinion; do not automatically repeat the audit after that pass unless the user explicitly reopens it. Session freshness and model choice are procedural recommendations that the skill cannot enforce.
+Use `uu-second-opinion` once, after `uu-review` approves, as a bounded pre-merge sanity check for material risks missed by the plan/review/revise loop. Start a fresh session and invoke it with clean context: give that auditor the canonical goal document and repository state, but not worker summaries, prior reviews, or revision narratives. A clean audit approves the changeset rather than listing nits. If it reports a substantiated P0/P1 issue, paste the report into the original-context `uu-review` session, which adjudicates it and produces the only review output that may be handed to `uu-revise`. After accepted material fixes, run at most one final second opinion; do not automatically repeat the audit after that pass unless the user explicitly reopens it. 
+
+In an ideal world, you would have `uu-plan` and `uu-revise` working with one LLM family (e.g., Codex) and `uu-review`, `uu-summarize`, and `uu-second-opinion` working with another family (e.g., Claude Code). At a minimum, I recommend using different models for working and reviewing (e.g., GPT 5.6 Terra versus Sol), where your cheapest models are coders, and your smartest (most expensive) models are reviewers. For example, a reasonable single-family Codex workflow would be to use Sol/Light for `uu-plan`, Luna/High for `uu-revise`, Terra/Medium for `uu-review` and `uu-summarize`, and Sol/Medium for `uu-second-opinion`. Session freshness and model choice are procedural recommendations that the skill cannot enforce.
 
 ## Invocation
 
